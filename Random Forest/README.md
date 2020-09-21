@@ -19,7 +19,7 @@
 ## Data
 
 * TICA Seurat object: download it as specified in the publication
-* Supplementary table 2: excel file with the markers for each cell type. For simplicity, we provid it in the ./data/ folder.
+* Supplementary table 2: excel file with the markers for each cell type. For simplicity, we provide it in the ./data/ folder.
 
 
 ## Pipeline
