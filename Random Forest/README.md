@@ -18,8 +18,8 @@
 
 ## Data
 
-* TICA Seurat object: downloaded as specified in the publication
-* Supplementary table 2: excel file with the markers for each cell type. For simplicity, we provided in the ./data/ folder.
+* TICA Seurat object: download it as specified in the publication
+* Supplementary table 2: excel file with the markers for each cell type. For simplicity, we provid it in the ./data/ folder.
 
 
 ## Pipeline
@@ -35,7 +35,7 @@ The scripts should be run in the following order:
     * tmp/tica_input_dataframe_signatures_random_forest.rds: data frame with cells as observations, signatures as feautures and cell type as response variable.
 2. 2-create_test_sets_for_cross_validation.R
   * Input: tmp/tica_input_dataframe_signatures_random_forest.rds
-  * Output: tmp/test_set_per_fold.rds: list of 5 character vectors containing the cell barcodes of the cells belonging to each fold in the cross-validation.
+  * Output: tmp/test_set_per_fold.rds: list of 5 character vectors containing the barcodes of the cells that belong to each fold of the cross-validation.
 3. 3-run_random_forest.R: train and test 2 RF (cell type-specific + random signatures).
   * Arguments: this script should have one argument specifying the fold to run the RF (ie "fold1"). The purpose of this is to parallelize the execution of the RF across folds.
   * Input:
