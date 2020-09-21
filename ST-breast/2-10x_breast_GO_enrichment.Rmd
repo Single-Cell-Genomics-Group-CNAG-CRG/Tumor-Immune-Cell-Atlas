@@ -1,0 +1,180 @@
+---
+title: "2-10x breast GO enrichment"
+author: "Marc Elosua-Bayes"
+date: "6/12/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this R markdown document we are going to carry out Gene marker and Gene Ontology enrichment analysis.
+
+## Libraries
+```{r}
+library(Seurat)
+library(Spaniel)
+library(tidyverse)
+library(Matrix)
+library(SPOTlight)
+source("utils/bin.r")
+source("utils/spatial_plot_spaniel.R")
+```
+
+## Paths
+```{r}
+source("misc/paths.R")
+dir.create(path = sprintf("%s/%s", an_breast_10x, robj_dir),
+           showWarnings = FALSE,
+           recursive = TRUE)
+
+dir.create(path = sprintf("%s/%s", an_breast_10x, plt_dir),
+           showWarnings = FALSE,
+           recursive = TRUE)
+
+```
+
+## Load data
+Data loaded here comes from 1-10x_breast_QC.Rmd and 3-10x_breast_immune_reference.Rmd
+```{r}
+breast_merged <- readRDS(file = sprintf("%s/%s/breast_merged_processed.RDS", an_breast_10x, robj_dir))
+decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x.RDS", an_breast_10x, robj_dir))
+```
+
+## Analysis
+Start by getting the marker genes for the clusters
+```{r}
+Seurat::Idents(breast_merged) <- breast_merged$SCT_snn_res.0.1
+st_markers <- Seurat::FindAllMarkers(object = breast_merged,
+                       assay = "SCT",
+                       slot = "data",
+                       only.pos = TRUE)
+st_markers %>% count(cluster)
+saveRDS(object = st_markers,
+        file = sprintf("%s/%s/markers_breast_10x_res.0.1.RDS", an_breast_10x, robj_dir))
+```
+
+Filter top genes
+```{r}
+pull_col <- function(.x) {
+  return(.x %>% pull(var = "gene"))
+}
+
+marker_ls <- st_markers %>% 
+  dplyr::filter(p_val_adj < 0.01) %>%
+  dplyr::group_by(cluster) %>% 
+  dplyr::group_split() %>% 
+  purrr::map(.f = pull_col)
+
+```
+
+### GO term enrichment analysis
+```{r eval = FALSE}
+library(org.Hs.eg.db)
+library(GOstats)
+
+univ <- stringr::str_split(string = rownames(breast_merged@assays$Spatial@counts),
+                           pattern = " ",
+                           simplify = TRUE)[, 1]
+
+DE_df1 <- lapply(seq_len(length(marker_ls)), function(i) {
+  # gene_set <- convert_symb_entrez(gene_vec = stringr::str_to_upper(markers_ln1_ls[[i]]))
+  # gene_universe <- convert_symb_entrez(gene_vec = stringr::str_to_upper(rownames(ln_1)))
+  print(i)
+  go_clust <- gene_enrichment_GO(gene_de = stringr::str_to_upper(marker_ls[[i]]),
+                     gene_universe = univ) %>% 
+    summary(.) %>% 
+    dplyr::mutate(cluster = i)
+  
+  return(go_clust)
+}) %>% 
+  dplyr::bind_rows()
+
+saveRDS(object = DE_df1, file = sprintf("%s/%s/go_enrichment_breast_10x_res.0.1.RDS", an_breast_10x, robj_dir))
+```
+
+
+```{r}
+DE_df1 <- readRDS(file = sprintf("%s/%s/go_enrichment_breast_10x_res.0.1.RDS", an_breast_10x, robj_dir))
+```
+
+#### Visualization
+For visualization purposses we are going to check GO terms at varying levels of specificities.
+
+```{r}
+DE_specific <- DE_df1 %>%
+  dplyr::filter(Size <= 50 & Pvalue < 0.01 & Count >= 3)
+
+DE_mid <- DE_df1 %>%
+  dplyr::filter(Size <= 300 & Size >= 30 & Pvalue < 0.01 & Count >= 3)
+
+DE_general <- DE_df1 %>%
+  dplyr::filter(Size > 300 & Pvalue < 0.01 & Count >= 3)
+```
+
+```{r}
+GO_visualization <- function(ds) {
+  plt_ls <- lapply(unique(ds$cluster), function(i) {
+    tmp_plt <- ds %>%
+      dplyr::filter(cluster == i) %>%
+      dplyr::arrange(desc(OddsRatio)) %>%
+      head(20) %>% 
+      ggplot(.) +
+        geom_point(aes(x = OddsRatio,
+                       y = reorder(Term, OddsRatio),
+                       size = -Pvalue,
+                       color = Pvalue)) +
+        labs(title = sprintf("Cluster %s", i - 1)) +
+        scale_color_gradient(low = "green",
+                             high = "red") +
+      theme_classic()
+    return(tmp_plt)
+  })
+  return(plt_ls)
+}
+```
+
+Specific
+```{r}
+GO_visualization(ds = DE_specific) %>%
+  ggpubr::ggexport(plotlist = .,
+                   filename = sprintf("%s/%s/go_enrich_breast_10x_res.0.1_specific.pdf",
+                                      an_breast_10x, plt_dir),
+                   width = 12)
+```
+
+Middle
+```{r}
+GO_visualization(ds = DE_mid) %>%
+  ggpubr::ggexport(plotlist = .,
+                   filename = sprintf("%s/%s/go_enrich_breast_10x_res.0.1_mid.pdf",
+                                      an_breast_10x, plt_dir),
+                   width = 12)
+```
+
+General
+```{r}
+GO_visualization(ds = DE_general) %>%
+  ggpubr::ggexport(plotlist = .,
+                   filename = sprintf("%s/%s/go_enrich_breast_10x_res.0.1_general.pdf",
+                                      an_breast_10x, plt_dir),
+                   width = 12)
+```
+
+Look at estrogen, progesterone and HER2 receptor genes
+```{r}
+Seurat::SpatialFeaturePlot(object = breast_merged,
+                           features = c("ESR1", # Estrogen receptor
+                                        "PGR", # Progesterone receptor
+                                        "ERBB2"), # HER2 positive
+                           alpha = c(0, 1))
+
+
+Seurat::SpatialDimPlot(object = breast_merged,
+                       group.by = "seurat_clusters")
+
+```
+

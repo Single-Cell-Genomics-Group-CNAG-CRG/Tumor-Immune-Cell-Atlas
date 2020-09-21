@@ -1,0 +1,640 @@
+---
+title: "3-10x_breast_immune_reference"
+author: "Marc Elosua-Bayes"
+date: "6/12/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+In this R markdown document we will map immune cells onto the breast cancer tissue. 
+
+
+```{r}
+library(Seurat)
+# library(Spaniel)
+library(tidyverse)
+library(Matrix)
+library(SPOTlight)
+source("utils/bin.r")
+source("utils/spatial_plot_spaniel.R")
+```
+
+## Paths
+```{r}
+source("misc/paths.R")
+dir.create(path = sprintf("%s/%s", an_breast_10x, robj_dir),
+           showWarnings = FALSE,
+           recursive = TRUE)
+
+dir.create(path = sprintf("%s/%s", an_breast_10x, plt_dir),
+           showWarnings = FALSE,
+           recursive = TRUE)
+```
+
+## Parameters
+```{r}
+trn <- "melanoma"
+cl_n <- 100
+hvg <- 3000
+ntop <- NULL
+transf <- "uv"
+method <- "nsNMF"
+min_cont <- 0
+clust_vr <- "new_cell_types"
+
+if (is.null(ntop)) {
+  spotlight_id <- sprintf("trn-%s_cln-%s_hvg-%s_ntop-NULL_transf-%s_method-%s_mincont-%s",
+                          trn, cl_n, hvg, transf, method, min_cont)
+} else {
+  spotlight_id <- sprintf("trn-%s_cln-%s_hvg-%s_ntop-%s_transf-%s_method-%s_mincont-%s",
+                          trn, cl_n, hvg, ntop, transf, method, min_cont)
+}
+
+ct_interest <- c("Plasma B cells", "Regulatory T cells", "T helper cells",
+                 "Proliferative T cells", "Pre-exhausted CD8 T cells", "Cytotoxic CD8 T cells",
+                 "NK", "SPP1 TAMs", "M2 TAMs")
+```
+
+## Load data
+Breast cancer data loaded here comes from 1-10x_breast_QC.Rmd
+```{r}
+### Spatial breast cancer
+breast_merged <- readRDS(file = sprintf("%s/%s/breast_merged_processed.RDS",
+                                        an_breast_10x, robj_dir))
+
+### Immune reference atlas
+if (trn == "full") {
+  ica_se <- readRDS("data/immune_reference/atlas_250_specific_cell_type.rds")
+} else if (trn == "breast") {
+  ica_se <- readRDS("data/immune_reference/atlas_complete_annotation_breast.rds")
+} else if (trn == "melanoma") {
+  ica_se <- readRDS("data/immune_reference/atlas_complete_annotation_melanoma.rds")
+}
+
+# ica_se <- ica_se[, !ica_se$specific_cell_type %in% c("MAST")]
+```
+
+Create a name/color dataframe
+```{r}
+# cell_types <- sort(unique(as.character(ica_se@meta.data[, clust_vr])))
+source("misc/col_df_scrpt.R")
+```
+
+Change variable names to remove non-standard characters
+```{r}
+ica_se[["specific_cell_type_mod"]] <- gsub(pattern = "[[:punct:]]|[[:blank:]]", ".",
+                               x = as.character(ica_se@meta.data[, clust_vr]), 
+                               perl = TRUE)
+```
+
+Select 250 cells per cell type
+```{r eval = FALSE }
+library(dplyr)
+n <- 250
+keep_id <- ica_se@meta.data %>%
+  tibble::rownames_to_column("barcode") %>% 
+  dplyr::group_by(specific_cell_type_mod) %>%
+  dplyr::sample_n(if(n() < n) n() else n) %>% 
+  dplyr::distinct() %>%
+  dplyr::pull("barcode")
+
+ica_se <- ica_se[, keep_id]
+```
+
+Next we are going to process the seurat object. Since we are working with data from multiple sources and we need to have the data normalized using unit variance we will run SCTransform. We regress the effect of the source while scaling but not centering the data. This way we remove the source batch, perform unit variance scaling and keep it positive by not centering it around 0.
+```{r}
+Seurat::Idents(ica_se) <- ica_se@meta.data[, "specific_cell_type_mod"]
+
+if (trn == "full") {
+  # ica_se <- Seurat::SCTransform(ica_se,
+  #                               # Regress out the effect of the study/protocol
+  #                               vars.to.regress = "source",
+  #                               assay = "RNA",
+  #                               # Scale data to unit variance
+  #                               do.scale = TRUE,
+  #                               # Do NOT center around 0
+  #                               do.center = FALSE)
+  # saveRDS(object = ica_se,
+  #       file = sprintf("%s/%s/ica_se_full_processed.RDS",
+  #                      an_breast_10x, robj_dir))
+  
+  ica_se <- readRDS(file = sprintf("%s/%s/ica_se_full_processed.RDS",
+                       an_breast_10x, robj_dir))
+
+} else if (trn == "breast") {
+  # ica_se <- Seurat::SCTransform(ica_se,
+  #                               assay = "RNA",
+  #                               # Scale data to unit variance
+  #                               do.scale = TRUE,
+  #                               # Do NOT center around 0
+  #                               do.center = FALSE)
+  # saveRDS(object = ica_se,
+  #         file = sprintf("%s/%s/ica_se_breast_processed.RDS",
+  #                        an_breast_10x, robj_dir))
+  # 
+  ica_se <- readRDS(file = sprintf("%s/%s/ica_se_breast_processed.RDS",
+                         an_breast_10x, robj_dir))
+} else if (trn == "melanoma") {
+  # ica_se <- Seurat::SCTransform(ica_se,
+  #                             assay = "RNA",
+  #                             # Scale data to unit variance
+  #                             do.scale = TRUE,
+  #                             # Do NOT center around 0
+  #                             do.center = FALSE,
+  #                             ncells = 5000)
+  # saveRDS(object = ica_se,
+  #         file = "data/immune_reference/ica_se_melanoma_processed.RDS")
+  ica_se <- readRDS(file = "data/immune_reference/ica_se_melanoma_processed.RDS")
+
+}
+```
+
+Immune cell marker genes
+```{r eval = FALSE}
+# ica_se <- Seurat::SCTransform(object = ica_se, assay = "RNA")
+ica_markers <- Seurat::FindAllMarkers(object = ica_se,
+                       assay = "SCT",
+                       slot = "data",
+                       only.pos = TRUE,
+                       logfc.threshold = 0,
+                       min.pct = 0,
+                       max.cells.per.ident = 250)
+
+if (trn == "full") {
+  saveRDS(object = ica_markers,
+        file = "data/immune_reference/ica_markers_all.RDS")
+} else if (trn == "breast") {
+  saveRDS(object = ica_markers,
+        file = "data/immune_reference/ica_markers_breast.RDS")
+} else if (trn == "melanoma") {
+  saveRDS(object = ica_markers,
+        file = "data/immune_reference/ica_markers_melanoma.RDS")
+}
+```
+
+Check how many unique genes per cluster there are
+```{r}
+# ica_markers <- readRDS(file = "data/immune_reference/ica_markers_all.RDS")
+# ica_markers <- readRDS(file = "data/immune_reference/ica_markers_all_reg-out-source.pdf")
+# ica_markers <- readRDS(file = "data/immune_reference/ica_markers_all_latent.RDS")
+# ica_markers <- readRDS(file = "data/immune_reference/ica_pdac_markers_all.RDS")
+
+if (trn == "full") {
+  ica_markers <- readRDS(file = "data/immune_reference/ica_markers_all.RDS")
+} else if (trn == "breast") {
+  ica_markers <- readRDS(file = "data/immune_reference/ica_markers_breast.RDS")
+} else if (trn == "melanoma") {
+  ica_markers <- readRDS(file = "data/immune_reference/ica_markers_melanoma.RDS")
+}
+
+# ica_markers <- ica_markers %>%
+#   filter(avg_logFC > 0.5 & pct.1 > 0.25)
+
+
+# Select unique markers from each cluster, if there are common markers between clusters lda model gets confused and classifies very different clusters as belonging to the same topic just because the seeding induced it!
+cluster_markers_uniq <- lapply(unique(ica_markers$cluster), function(clust) {
+  ls1 <- ica_markers[ica_markers$cluster == clust, "gene"]
+  ls2 <- ica_markers[ica_markers$cluster != clust, "gene"]
+  ls1_unique <- ls1[! ls1 %in% ls2]
+
+  return(ica_markers[ica_markers$cluster == clust & ica_markers$gene %in% ls1_unique, ])
+}) %>%
+  dplyr::bind_rows()
+
+ica_markers %>% 
+  dplyr::count(cluster) %>% 
+  dplyr::left_join(cluster_markers_uniq %>% dplyr::count(cluster, name = "n_unique"))
+```
+
+Here we want ot check if the gene markers obtained using UV and no scaling are the same as if we use scaling and no UV
+```{r eval = FALSE}
+ica_markers_uv <- readRDS(file = "data/immune_reference/ica_markers_all.RDS")
+
+markers_uv_ls <- lapply(unique(ica_markers_uv$cluster), function(clust) {
+  ica_markers_uv[ica_markers_uv$cluster == clust, "gene"]
+})
+names(markers_uv_ls) <- unique(ica_markers_uv$cluster)
+
+  
+ica_markers <- readRDS(file = "data/immune_reference/ica_markers_all.RDS")
+
+markers_ls <- lapply(unique(ica_markers$cluster), function(clust) {
+  ica_markers[ica_markers$cluster == clust, "gene"]
+})
+names(markers_ls) <- unique(ica_markers$cluster)
+
+df <- lapply(names(markers_ls), function(ct) {
+  norm_uv <- sum(markers_ls[[ct]] %in% markers_uv_ls[[ct]])
+  uv_norm <- sum(markers_uv_ls[[ct]] %in% markers_ls[[ct]])
+  total_norm <- length(markers_ls[[ct]])
+  total_uv <- length(markers_uv_ls[[ct]])
+  
+  data.frame(norm_uv, uv_norm, total_norm, total_uv)
+}) %>% bind_rows()
+
+```
+
+Lastly we need to compute UV normalization of the spatial data so that it applys correctly for all.
+In this case we are not correcting for any batch since there is none in the spatial data.
+to SPOTlightm since we are passing the argument trasnf = raw, we are going to pass directly the normalized SCT$data matrix.
+```{r}
+breast_merged <- Seurat::SCTransform(breast_merged,
+                              assay = "Spatial",
+                              # Scale data to unit variance
+                              do.scale = TRUE,
+                              # Do NOT center around 0
+                              do.center = FALSE)
+```
+
+## Deconvolution
+Run deconvolution using the previously uv normalized and source-adjusted SCT-data expression matrix.
+```{r eval = FALSE}
+decon_mtrx_ls <- SPOTlight::spotlight_deconvolution(
+  se_sc = ica_se,
+  counts_spatial = breast_merged@assays$SCT@data,
+  clust_vr = "specific_cell_type_mod",
+  cluster_markers = ica_markers,
+  cl_n = cl_n,
+  hvg = hvg,
+  ntop = ntop,
+  transf = "raw", # Set to raw 
+  method = method,
+  min_cont = min_cont,
+  assay = "SCT",
+  slot = "data")
+
+# saveRDS(object = decon_mtrx_ls,
+#         file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s_reg.RDS",
+#                        an_breast_10x, robj_dir, spotlight_id))
+# 
+# saveRDS(object = decon_mtrx_ls,
+#         file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s_latent.RDS",
+#                        an_breast_10x, robj_dir, spotlight_id))
+
+saveRDS(object = decon_mtrx_ls,
+        file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s.RDS",
+                       an_breast_10x, robj_dir, spotlight_id))
+```
+
+Add deconvolution matrix to Seurat object metadata
+```{r}
+decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_TICA_breast_%s.RDS",
+                       an_breast_10x, robj_dir, spotlight_id))
+
+# decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s.RDS",
+#                                         an_breast_10x, robj_dir, spotlight_id))
+# decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_pdac_atlas.RDS", an_breast_10x, robj_dir))
+# decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s_reg.RDS",
+#                        an_breast_10x, robj_dir, spotlight_id))
+# 
+# decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s_latent.RDS",
+#                        an_breast_10x, robj_dir, spotlight_id))
+
+decon_mtrx <- decon_mtrx_ls[[2]]
+decon_mtrx <- decon_mtrx[, colnames(decon_mtrx) != "res_ss"]
+
+# Set as 0 cell types predicted to be under 0.1 % of the spot
+decon_mtrx[decon_mtrx < 0.001] <- 0
+```
+
+Change names to original ones and reorder according to Paula
+```{r}
+new_colnames <- data.frame(ct_name = colnames(decon_mtrx), stringsAsFactors = FALSE) %>%
+  dplyr::left_join(col_df, by = "ct_name") %>%
+  dplyr::pull(plt_name)
+
+colnames(decon_mtrx) <- new_colnames
+
+paula_order[! paula_order %in% colnames(decon_mtrx)]
+decon_mtrx <- decon_mtrx[, paula_order]
+```
+
+Add deconvolution matrix to Seurat object metadata
+```{r}
+breast_merged@meta.data <- cbind(breast_merged@meta.data, decon_mtrx)
+```
+
+### Visualization
+Before we start we take a look at the topic profiles
+```{r}
+# Extract coefficient matrix
+h <- NMF::coef(decon_mtrx_ls[[1]][[1]])
+
+# Extract coefficient labels
+train_labs <- data.frame(ct_name = decon_mtrx_ls[[1]][[2]]) %>%
+  dplyr::left_join(col_df, by = "ct_name") %>%
+  pull(plt_name)
+
+rownames(h) <- paste("Topic", 1:nrow(h), sep = " ")
+profile_plt <- dot_plot_profiles_fun(h = h,
+                                 train_cell_clust = train_labs,
+                                 clust_vr = "specific_cell_type_mod")
+profile_plt[[2]]
+profile_plt[[1]]
+
+cowplot::save_plot(filename = sprintf("%s/%s/all_ct_profiles_%s.svg",
+                                      an_breast_10x, plt_dir, spotlight_id),
+                   plot = profile_plt[[1]],
+                   base_height = 30,
+                   base_width = 30)
+
+cowplot::save_plot(filename = sprintf("%s/%s/ct_profiles_%s.svg",
+                                      an_breast_10x, plt_dir, spotlight_id),
+                   plot = profile_plt[[2]] + 
+                     theme(axis.title = element_text(size = 18)),
+                   base_height = 15,
+                   base_width = 15)
+```
+
+We will start by looking at the location of each cell type
+```{r}
+cell_types <- colnames(decon_mtrx)[! colnames(decon_mtrx) %in% "res_ss"]
+
+lapply(seq_len(length(unique(breast_merged$slice))), function(i) {
+  slice_n <- unique(breast_merged$slice)[[i]]
+  st_se <- breast_merged[, breast_merged$slice == slice_n]
+  
+  ct_plt_ls <- lapply(cell_types, function(ct) {
+    tmp_plt <-Seurat::SpatialFeaturePlot(object = st_se,
+                               features = ct,
+                               alpha = c(0, 1))
+    
+    if (sum(st_se@meta.data[, ct]) == 0) {
+      tmp_plt <- tmp_plt[[i]] + scale_alpha(range = c(0,0))
+    } else {
+      tmp_plt <- tmp_plt[[i]] + scale_alpha(range = c(0, 1))
+    }
+    
+    tmp_plt <- tmp_plt +
+      theme(
+        legend.title = element_blank()
+        ) +
+      labs(title = ct) +
+      scale_fill_gradientn(
+        colors = heat.colors(10, rev = TRUE),
+        limits = c(0, 1))
+      
+    # def_plt <- join_seurat_spatial(se_obj = breast_merged,
+    #                                grp = "slice",
+    #                                plt = tmp_plt,
+    #                                feat = ct)
+  
+  return(tmp_plt)
+  })
+
+  cowplot::plot_grid(plotlist = ct_plt_ls,
+                     axis = "trbl",
+                     align = "hv",
+                     nrow = 5,
+                     ncol = 5) %>%
+    cowplot::save_plot(filename = sprintf("~/Desktop/breast_10x_immune_reference_arrangement_breast-%s.svg",
+                                          i),
+                       plot = .,
+                       base_height = 25,
+                       base_width = 25)
+      # cowplot::save_plot(filename = sprintf("%s/%s/breast_10x_immune_reference_arrangement_breast-%s.svg",
+      #                                     an_breast_10x, plt_dir, i),
+      #                  plot = .,
+      #                  base_height = 25,
+      #                  base_width = 25)
+
+})
+```
+
+Next we will only plot the location of the cell types of interest for the main plot
+```{r}
+# i <- unique(breast_merged$slice)[1]
+# ct <- cell_types[[1]]
+lapply(seq_len(length(unique(breast_merged$slice))), function(i) {
+  print(i)
+  slice_n <- unique(breast_merged$slice)[[i]]
+  st_se <- breast_merged[, breast_merged$slice == slice_n]
+  
+  ct_plt_ls <- lapply(ct_interest, function(ct) {
+    print(ct)
+    tmp_plt <-Seurat::SpatialFeaturePlot(object = st_se,
+                               features = ct,
+                               alpha = c(0, 1))
+    
+    if (sum(st_se@meta.data[, ct]) == 0) {
+      tmp_plt <- tmp_plt[[i]] + scale_alpha(range = c(0,0))
+    } else {
+      tmp_plt <- tmp_plt[[i]] +
+        scale_fill_gradientn(
+          colors = heat.colors(10, rev = TRUE),
+          limits = c(0, max(st_se@meta.data[, ct]) + 0.05))
+        # scale_alpha(range = c(0, max(st_se@meta.data[, ct]) + 0.05))
+    }
+    
+    tmp_plt <- tmp_plt +
+      labs(title = ct) +
+      theme(
+        plot.title = element_text(size = 20, face = "bold"),
+        legend.title = element_blank())
+    # def_plt <- join_seurat_spatial(se_obj = breast_merged,
+    #                                grp = "slice",
+    #                                plt = tmp_plt,
+    #                                feat = ct)
+  
+  return(tmp_plt)
+  })
+
+  cowplot::plot_grid(plotlist = ct_plt_ls,
+                     axis = "trbl",
+                     align = "hv",
+                     nrow = 3,
+                     ncol = 3) %>%
+    cowplot::save_plot(filename = sprintf("%s/%s/breast_10x_immune_reference_arrangement_breast-%s_interest.svg",
+                                          an_breast_10x, plt_dir, i),
+                       plot = .,
+                       base_height = 18,
+                       base_width = 15)
+})
+```
+
+Then we will plot the spatial-scatterpie for both slices to get a gist of what is going on
+```{r}
+spsct_plt1 <- SPOTlight::spatial_scatterpie(se_obj = breast_merged[, breast_merged$slice == "breast_1"],
+                              cell_types_all = cell_types,
+                              img_path = "data/breast_visium/section_1/spatial/tissue_lowres_image.png",
+                              pie_scale = 0.4,
+                              slice = "breast_1") +
+              scale_fill_manual(values = col_df[col_df$plt_name %in% cell_types, "ct_col"],
+                                breaks = cell_types) +
+              guides(fill=guide_legend(ncol = 1))
+
+cowplot::save_plot(filename = sprintf("%s/%s/breast1_10x_spatial_scatterpie.pdf", an_breast_10x, plt_dir),
+                   plot = spsct_plt1,
+                   base_width = 12,
+                   base_height = 9)
+
+spsct_plt2 <- SPOTlight::spatial_scatterpie(se_obj = breast_merged[, breast_merged$slice == "breast_2"],
+                              cell_types_all = cell_types,
+                              img_path = "data/breast_visium/section_1/spatial/tissue_lowres_image.png",
+                              pie_scale = 0.4,
+                              slice = "breast_2") +
+              scale_fill_manual(values = col_df[col_df$plt_name %in% cell_types, "ct_col"],
+                                breaks = cell_types)+
+              guides(fill=guide_legend(ncol = 1))
+
+cowplot::save_plot(filename = sprintf("%s/%s/breast2_10x_spatial_scatterpie.pdf", an_breast_10x, plt_dir),
+                   plot = spsct_plt2,
+                   base_width = 12,
+                   base_height = 9)
+```
+
+We will also plot the scatterpie without the slice image underneath
+```{r}
+img_dict <- list()
+img_dict[["breast_1"]] <- "breast_1"
+img_dict[["breast_2"]] <- "breast_2"
+lapply(unique(breast_merged$slice), function(i) {
+  sct_plt1 <- SPOTlight::scatterpie_plot(se_obj = breast_merged[, breast_merged$slice == i],
+                                         cell_types_all = paula_order,
+                                         pie_scale = 0.7,
+                                         slice = img_dict[[i]]) +
+            scale_fill_manual(values = col_df[col_df$plt_name %in% paula_order, "ct_col"],
+                              breaks = paula_order) +
+            coord_fixed(ratio = 1) +
+            guides(fill = guide_legend(ncol = 1))
+
+  cowplot::save_plot(filename = sprintf("%s/%s/breast_%s_10x_scatterpie.svg",
+                                        an_breast_10x, plt_dir, i),
+                     plot = sct_plt1,
+                     base_width = 12,
+                     base_height = 9)
+})
+```
+
+We can also take a loot at the spatial scatterpie by looking at cell types which are not present throughout the entire tissue.
+```{r}
+lapply(unique(breast_merged$slice), function(i) {
+  # Subset slice
+  st_se <- breast_merged[, breast_merged$slice == i]
+  
+  # Subset cell types from metadata
+  metadata_subset <- st_se@meta.data[, paula_order]
+  
+  # Create masks
+  keep_0.9 <- colSums(st_se@meta.data[, paula_order] > 0) < 0.9 * ncol(st_se)
+  keep_g0 <- colSums(st_se@meta.data[, paula_order] > 0) > 0
+  
+  # Select cell types fullfiling the conditions
+  ct_var <- colnames(decon_mtrx)[keep_0.9 & keep_g0]
+
+  sct_plt <- SPOTlight::scatterpie_plot(se_obj = st_se,
+                                         cell_types_all = ct_var,
+                                         pie_scale = 0.4,
+                                         slice = img_dict[[i]]) +
+            scale_fill_manual(values = col_df[col_df$plt_name %in% ct_var, "ct_col"],
+                              breaks = ct_var) +
+            labs(fill = "") +
+            coord_fixed(ratio = 1) +
+            theme(legend.position = "top") +
+            guides(fill = guide_legend(nrow = 3))
+
+  cowplot::save_plot(filename = sprintf("%s/%s/breast_10x_scatterpie_variable_subset_%s.svg",
+                                        an_breast_10x, plt_dir, i),
+                     plot = sct_plt,
+                     base_width = 12,
+                     base_height = 9)
+  
+  # cowplot::save_plot(filename = sprintf("~/Downloads/breast_10x_scatterpie_variable_subset_%s.svg",
+  #                                       i),
+  #                    plot = sct_plt,
+  #                    base_width = 12,
+  #                    base_height = 9)
+
+})
+
+```
+
+### Gene - Cell correlation
+Check assumptions
+```{r}
+lapply(unique(breast_merged$slice), function(i) {
+  st_se <- breast_merged[, breast_merged$slice == i]
+  
+  lapply(c("Regulatory T cells", "Proliferative T cells"), function(ct) {
+    # Shapiro-Wilk normality test for mpg
+    print(shapiro.test(st_se@meta.data[, ct]))
+    ggpubr::ggqqplot(st_se@meta.data[, ct])
+  
+  })
+  
+  lapply(c("ENTPD1", "NT5E", "TGFB1"), function(gene) {
+    # Shapiro-Wilk normality test for mpg
+    print(shapiro.test(st_se@assays$SCT@data[gene, ]))
+    ggpubr::ggqqplot(st_se@assays$SCT@data[gene, ])
+  
+  })
+})
+```
+
+Next we want to check if the fibrotic marker TGFB1 with Treg and Tprolif 
+```{r}
+library(ggpubr)
+tmp_plts <- lapply(unique(breast_merged$slice), function(i) {
+  st_se <- breast_merged[, breast_merged$slice == i]
+  
+  metadata <- dplyr::bind_cols(st_se@meta.data,
+                               data.frame(t(st_se@assays$SCT@data[c("ENTPD1", "NT5E", "TGFB1"), ])))
+  
+  cor_plts <- lapply(c("Regulatory T cells", "Proliferative T cells"), function(ct) {
+    # tmp_ls <- lapply(c("ENTPD1", "NT5E", "TGFB1"), function(gene) {
+    tmp_ls <- lapply(c("TGFB1"), function(gene) {
+      
+      tmp_plt <- ggpubr::ggscatter(data = metadata,
+                        x = gene,
+                        y = ct,
+                        add = "reg.line") +
+         ggpubr::stat_cor(method = "pearson")
+      return(tmp_plt)
+    })
+    
+    cowplot::plot_grid(plotlist = tmp_ls, ncol = 1)
+  })
+  
+  tmp_arr <- cowplot::plot_grid(plotlist = cor_plts,
+                                nrow = 1,
+                                ncol = 2)
+  
+  # now add the title
+  title <- cowplot::ggdraw() +
+    cowplot::draw_label(
+      i,
+      fontface = 'bold',
+      x = 0,
+      hjust = 0,
+      size = 20
+    ) +
+    ggplot2::theme(
+      # add margin on the left of the drawing canvas,
+      # so title is aligned with left edge of first plot
+      plot.margin = margin(0, 0, 0, 20)
+    )
+  
+  cowplot::plot_grid(
+    title, tmp_arr,
+    ncol = 1,
+    # rel_heights values control vertical title margins
+    rel_heights = c(0.1, 1)
+  )
+}) %>%
+  cowplot::plot_grid(plotlist = tmp_plts,
+                     nrow = 2)
+
+tmp_plts
+```
+
+## Session Info
+```{r}
+sessionInfo()
+```
+

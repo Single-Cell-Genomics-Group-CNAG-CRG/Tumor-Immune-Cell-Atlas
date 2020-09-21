@@ -1,0 +1,139 @@
+---
+title: "3- Australia oropharyngeal cancer immune deconvolution"
+author: "Marc Elosua-Bayes"
+date: "9/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+In this Rmarkdown I am going to map immune cells from TICA on to the spatial tissue using [SPOTlight](https://github.com/MarcElosua/SPOTlight).
+
+## Libraries
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(matchSCore2)
+library(purrr)
+library(SPOTlight)
+source("misc/paths.R")
+source("utils/bin.r")
+source("utils/spatial_plot_spaniel.R")
+```
+
+## Parameters
+```{r}
+trn <- "melanoma"
+cl_n <- 100
+hvg <- 3000
+ntop <- NULL
+transf <- "uv"
+method <- "nsNMF"
+min_cont <- 0
+clust_vr <- "new_cell_types"
+
+if (is.null(ntop)) {
+  spotlight_id <- sprintf("trn-%s_cln-%s_hvg-%s_ntop-NULL_transf-%s_method-%s_mincont-%s",
+                          trn, cl_n, hvg, transf, method, min_cont)
+} else {
+  spotlight_id <- sprintf("trn-%s_cln-%s_hvg-%s_ntop-%s_transf-%s_method-%s_mincont-%s",
+                          trn, cl_n, hvg, ntop, transf, method, min_cont)
+}
+```
+
+## Load data
+We are going to start by loading the data from the previosu script *1-australis_oroph_processing.Rmd*.
+
+```{r}
+st_ls <- readRDS(file = sprintf("%s/%s/processed_st_ls_oropharyngeal.RDS",
+                       an_oro, robj_dir))
+
+names(st_ls)
+
+### Immune reference atlas
+if (trn == "full") {
+  ica_se <- readRDS("data/immune_reference/atlas_250_specific_cell_type.rds")
+} else if (trn == "breast") {
+  ica_se <- readRDS("data/immune_reference/atlas_complete_annotation_breast.rds")
+} else if (trn == "melanoma") {
+  ica_se <- readRDS("data/immune_reference/atlas_complete_annotation_melanoma.rds")
+}
+
+# ica_se <- ica_se[, !ica_se$specific_cell_type %in% c("MAST")]
+
+```
+
+Create a name/color dataframe
+```{r}
+source("misc/col_df_scrpt.R")
+```
+
+Change variable names to remove non-standard characters
+```{r}
+ica_se[["specific_cell_type_mod"]] <- gsub(pattern = "[[:punct:]]|[[:blank:]]", ".",
+                               x = as.character(ica_se@meta.data[, clust_vr]), 
+                               perl = TRUE)
+```
+
+Next we are going to process the seurat object. Since we are working with data from multiple sources and we need to have the data normalized using unit variance we will run SCTransform. We regress the effect of the source while scaling but not centering the data. This way we remove the source batch, perform unit variance scaling and keep it positive by not centering it around 0.
+```{r}
+Seurat::Idents(ica_se) <- ica_se@meta.data[, "specific_cell_type_mod"]
+
+if (trn == "full") {
+  ica_se <- readRDS(file = sprintf("%s/%s/ica_se_full_processed.RDS",
+                       an_breast_10x, robj_dir))
+
+} else if (trn == "breast") {
+  ica_se <- readRDS(file = sprintf("%s/%s/ica_se_breast_processed.RDS",
+                         an_breast_10x, robj_dir))
+} else if (trn == "melanoma") {
+  ica_se <- readRDS(file = "data/immune_reference/ica_se_melanoma_processed.RDS")
+
+}
+```
+
+Immune cell marker genes
+```{r eval = FALSE}
+# ica_se <- Seurat::SCTransform(object = ica_se, assay = "RNA")
+ica_markers <- Seurat::FindAllMarkers(object = ica_se,
+                       assay = "SCT",
+                       slot = "data",
+                       only.pos = TRUE,
+                       logfc.threshold = 0,
+                       min.pct = 0,
+                       max.cells.per.ident = 250)
+
+if (trn == "full") {
+  saveRDS(object = ica_markers,
+        file = "data/immune_reference/ica_markers_all.RDS")
+} else if (trn == "breast") {
+  saveRDS(object = ica_markers,
+        file = "data/immune_reference/ica_markers_breast.RDS")
+} else if (trn == "melanoma") {
+  saveRDS(object = ica_markers,
+        file = "data/immune_reference/ica_markers_melanoma.RDS")
+}
+```
+
+Load previously computed marker genes
+```{r}
+if (trn == "full") {
+  ica_markers <- readRDS(file = "data/immune_reference/ica_markers_all.RDS")
+} else if (trn == "breast") {
+  ica_markers <- readRDS(file = "data/immune_reference/ica_markers_breast.RDS")
+} else if (trn == "melanoma") {
+  ica_markers <- readRDS(file = "data/immune_reference/ica_markers_melanoma.RDS")
+}
+```
+
+## Deconvolution
+Since we are running this for all the slides please refer to the script **spotlight_deconv_oroph_job.R** which was used to send each slide's deconvolution to the cluster in parallel.
+
+## Session Info
+```{r}
+sessionInfo()
+```

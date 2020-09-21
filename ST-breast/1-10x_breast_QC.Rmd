@@ -1,0 +1,137 @@
+---
+title: "1-10x Breast cancer samples"
+author: "Marc Elosua-Bayes"
+date: "6/12/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this R markdown document we are going to look at the QC of breast carcinoma datasets publicly put out by 10X genomics [here](https://support.10xgenomics.com/spatial-gene-expression/datasets/). Specifications of the tissue are the following:
+
+10x Genomics obtained fresh frozen Invasive Ductal Carcinoma breast tissue from BioIVT Asterand.  
+The tissue was AJCC/UICC Stage Group IIA, ER positive, PR negative, Her2 positive and annotated with:  
+
+* Ductal carcinoma in situ
+* Lobular carcinoma in situ
+* Invasive Carcinoma
+
+## Libraries
+```{r}
+library(Seurat)
+library(Spaniel)
+library(tidyverse)
+library(Matrix)
+library(SPOTlight)
+source("utils/bin.r")
+source("utils/spatial_plot_spaniel.R")
+```
+
+## Paths
+```{r}
+source("misc/paths.R")
+dir.create(path = sprintf("%s/%s", an_breast_10x, robj_dir),
+           showWarnings = FALSE,
+           recursive = TRUE)
+
+dir.create(path = sprintf("%s/%s", an_breast_10x, plt_dir),
+           showWarnings = FALSE,
+           recursive = TRUE)
+
+```
+
+## Load data
+Within this project the data is located at data/breast_visium/section_1 and data/breast_visium/section_2 respectively
+```{r}
+data_dir <- "data/breast_visium"
+sections_dir <- list.files(path = data_dir, full.names = TRUE)
+
+breast_1 <- Seurat::Load10X_Spatial(data.dir = "data/breast_visium/section_1",
+                        filename = "filtered_feature_bc_matrix.h5",
+                        slice = "breast_1")
+breast_1[["slice"]] <- "breast_1"
+
+breast_2 <- Seurat::Load10X_Spatial(data.dir = "data/breast_visium/section_2",
+                        filename = "filtered_feature_bc_matrix.h5",
+                        slice = "breast_2")
+breast_2[["slice"]] <- "breast_2"
+```
+
+The first slice has `r nrow(breast_1)` and `r ncol(breast_1)` samples, the second one in turn has `r nrow(breast_2)` and `r ncol(breast_2)` samples.
+
+## Process data
+```{r}
+breast_1 <- Seurat::SCTransform(object = breast_1, assay = "Spatial")
+breast_1 <- Seurat::FindVariableFeatures(breast_1)
+
+breast_2 <- Seurat::SCTransform(object = breast_2, assay = "Spatial")
+breast_2 <- Seurat::FindVariableFeatures(breast_2)
+```
+
+In order to work with multiple slices in the same Seurat object, we provide the merge function.
+```{r}
+breast_merged <- merge(breast_1, breast_2)
+```
+
+
+This then enables joint dimensional reduction and clustering on the underlying RNA expression data.
+```{r}
+Seurat::DefaultAssay(breast_merged) <- "SCT"
+Seurat::VariableFeatures(breast_merged) <- c(Seurat::VariableFeatures(breast_1),
+                                             Seurat::VariableFeatures(breast_2))
+breast_merged <- Seurat::RunPCA(breast_merged,
+                                verbose = FALSE)
+breast_merged <- Seurat::FindNeighbors(breast_merged,
+                                       dims = 1:30)
+breast_merged <- Seurat::FindClusters(breast_merged,
+                                      verbose = FALSE,
+                                      resolution = c(0.1, 0.25, 0.5, 0.8, 1))
+breast_merged <- Seurat::RunUMAP(breast_merged,
+                                 dims = 1:30)
+```
+
+## QC visualization
+For the QC we're going to look at the number of RNA counts and the number of genes detected per spot.
+```{r}
+breast_merged[["percent.mt"]] <- PercentageFeatureSet(breast_merged, pattern = "^MT-")
+spt_plt <- Seurat::SpatialFeaturePlot(object = breast_merged,
+                                      features = c("nCount_Spatial", "nFeature_Spatial", "percent.mt"),)
+spt_plt
+
+ft_plt <- Seurat::VlnPlot(object = breast_merged, 
+                          features = c("nCount_Spatial", "nFeature_Spatial", "percent.mt"),
+                          group.by = "slice")
+ft_plt
+
+SPOTlight::plot_image(img_path = "data/breast_visium/section_1/spatial/tissue_lowres_image.png")
+SPOTlight::plot_image(img_path = "data/breast_visium/section_2/spatial/tissue_lowres_image.png")
+```
+
+Both slices seem to be of good quality and similar between them which makes sense since they are from the same biopsy.
+
+## Clustering Visualization
+```{r}
+Seurat::DimPlot(object = breast_merged,
+                group.by = c("SCT_snn_res.0.1",
+                             "slice"),
+                label = TRUE)
+Seurat::SpatialDimPlot(object = breast_merged,
+                       group.by = c("SCT_snn_res.0.1"),
+                       label = TRUE) +
+  theme(legend.text = element_text(size = 15)) +
+  guides(fill = guide_legend(override.aes = list(size = 5)))
+```
+
+## Save data
+```{r}
+Seurat::Idents(breast_merged) <- breast_merged$SCT_snn_res.0.1
+saveRDS(object = breast_merged,
+        file = sprintf("%s/%s/breast_merged_processed.RDS", an_breast_10x, robj_dir))
+```
+
+
+
