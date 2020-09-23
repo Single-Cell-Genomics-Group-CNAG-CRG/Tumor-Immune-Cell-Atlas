@@ -15,6 +15,16 @@ This data is freely available to download from the 10X Genomics website referenc
 In this case we are using the data mapped using spaceranger 1.0.0.
 
 ## Code
-Scripts 1-10x_breast_QC.Rmd and 2-10x_breast_GO_enrichment.Rmd are in charge of preprocessing the data and mapping the TCA immune cell states onto the tissue. Scripts 
-3-10x_breast_immune_reference.Rmd  and 4-10x_breast_stratification.Rm, in turn, plot the Figure panels of Figure 6 and Supplementary Figure 13-17.
-All code was run with R 3.6.3.
+Scripts 1-10x_breast_QC.Rmd and 2-10x_breast_GO_enrichment.Rmd are in charge of preprocessing the data and mapping the TCA immune cell states onto the tissue. Scripts 3-10x_breast_immune_reference.Rmd  and 4-10x_breast_stratification.Rm, in turn, plot the Figure panels of Figure 6 and Supplementary Figure 13-17.
+
+## Dependencies
+* [R 3.6.0](https://cran.r-project.org/)
+* [Seurat 3.2.0](https://cran.r-project.org/web/packages/Seurat/index.html)
+* [tidyverse 1.3.0](https://cran.r-project.org/web/packages/tidyverse/index.html)
+* [ggpubr 0.3.0](https://cran.r-project.org/web/packages/ggpubr/index.html)
+* [SPOTlight 1.0.0](https://github.com/MarcElosua/SPOTlight)
+* [Matrix 1.2.18](https://cran.r-project.org/web/packages/Matrix/index.html)
+* [svglite 1.2.3.2](https://cran.r-project.org/web/packages/svglite/index.html)
+* [ggcorrplot 0.1.3](https://cran.r-project.org/web/packages/ggcorrplot/index.html)
+* [cowplot 1.1.0](https://cran.r-project.org/web/packages/cowplot/index.html)
+
