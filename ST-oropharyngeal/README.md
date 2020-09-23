@@ -25,4 +25,15 @@ Pending to get approval to post to GEO.
 ## Code
 Scripts 1-_australia_oroph_processing.Rmd, 2-australia_oroph_biological.Rmd, and 3-australia_oroph_deconv.Rmd are in charge of preprocessing and mapping 
 the TICA immune cell states to the tissue slices. 4-australia_oro_srtatification.Rmd  and 5-australia_oro_plots.Rmd, in turn, are in charge of making the plots for Figure 5 and Supplementary Figures 8-12.
-All code was run with R 3.6.3.
+
+## Dependencies
+* [R 3.6.0](https://cran.r-project.org/)
+* [Seurat 3.2.0](https://cran.r-project.org/web/packages/Seurat/index.html)
+* [tidyverse 1.3.0](https://cran.r-project.org/web/packages/tidyverse/index.html)
+* [ggpubr 0.3.0](https://cran.r-project.org/web/packages/ggpubr/index.html)
+* [SPOTlight 1.0.0](https://github.com/MarcElosua/SPOTlight)
+* [Matrix 1.2.18](https://cran.r-project.org/web/packages/Matrix/index.html)
+* [svglite 1.2.3.2](https://cran.r-project.org/web/packages/svglite/index.html)
+* [ggcorrplot 0.1.3](https://cran.r-project.org/web/packages/ggcorrplot/index.html)
+* [cowplot 1.1.0](https://cran.r-project.org/web/packages/cowplot/index.html)
+
