@@ -20,4 +20,4 @@ To demonstrate the power of out TICA, we predicted the cell types on datasets fr
 ## Data
 
 * TICA Seurat object: download it as specified in the publication (Zenodo link)
-* Query object: TODO: specify the samples predicted
+* Query samples: two human uveal melanoma cancers, one human ovarian cancer, one human uveal melanoma liver metastasis, one human non-small cell lung cancer brain metastasis (including TCR) and two mice colorectal cancers (one full and one only T cells and TCR) 
