@@ -1,0 +1,24 @@
+{
+    "id": "F83195C8",
+    "path": "~/GitHub/Tumor-Immune-Cell-Atlas/Integration/Atlas_integration_step5_visualization.R",
+    "project_path": "Atlas_integration_step5_visualization.R",
+    "type": "r_source",
+    "hash": "3217477973",
+    "contents": "",
+    "dirty": true,
+    "created": 1601843267130.0,
+    "source_on_save": false,
+    "relative_order": 2,
+    "properties": {
+        "cursorPosition": "12,46",
+        "scrollLine": "0"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1601847805,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1601847814009,
+    "read_only": false,
+    "read_only_alternatives": []
+}

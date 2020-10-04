@@ -1,0 +1,24 @@
+{
+    "id": "A6A9B62A",
+    "path": "~/GitHub/Tumor-Immune-Cell-Atlas/Integration/4-integration.R",
+    "project_path": "4-integration.R",
+    "type": "r_source",
+    "hash": "2831889230",
+    "contents": "",
+    "dirty": false,
+    "created": 1601839616425.0,
+    "source_on_save": false,
+    "relative_order": 5,
+    "properties": {
+        "cursorPosition": "11,14",
+        "scrollLine": "0"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1601843186,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1601843186471,
+    "read_only": false,
+    "read_only_alternatives": []
+}
