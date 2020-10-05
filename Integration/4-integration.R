@@ -1,4 +1,5 @@
-# this script performs the integration of the datasets based off the previously calculated anchors
+# this script performs the integration of the datasets
+# based on the previously calculated anchors
 
 # load libraries
 library(tidyverse)
@@ -9,7 +10,7 @@ anchors <- readRDS("anchors.rds")
 integrated <- IntegrateData(
   anchorset = anchors,
   normalization.method = "LogNormalize",
-  verbose = T,
+  verbose = TRUE,
   dims = 1:20
 )
 rm(anchors)

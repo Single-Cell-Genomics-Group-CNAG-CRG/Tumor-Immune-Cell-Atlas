@@ -1,1 +1,1 @@
-{"active_set":"","sets":[]}
+{"active_set":"lintr","sets":[{"name":"lintr","base_path":"","markers":[{"type":4,"path":"~/GitHub/Tumor-Immune-Cell-Atlas/Integration/6-clustering.R","line":67,"column":1,"message":"Lines should not be more than 80 characters.","log_path":"","log_line":-1,"show_error_list":true}]}]}
