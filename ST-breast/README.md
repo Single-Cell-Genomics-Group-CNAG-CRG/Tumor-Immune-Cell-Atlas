@@ -15,7 +15,8 @@ This data is freely available to download from the 10X Genomics website referenc
 In this case we are using the data mapped using spaceranger 1.0.0.
 
 ## Code
-Scripts 1-10x_breast_QC.Rmd and 2-10x_breast_GO_enrichment.Rmd are in charge of preprocessing the data and mapping the TCA immune cell states onto the tissue. Scripts 3-10x_breast_immune_reference.Rmd  and 4-10x_breast_stratification.Rm, in turn, plot the Figure panels of Figure 6 and Supplementary Figure 13-17.
+Scripts *1-10x_breast_QC.Rmd* and *2-10x_breast_GO_enrichment.Rmd* are in charge of preprocessing the data and mapping the TCA immune cell states onto the tissue. 
+Scripts *3-10x_breast_immune_reference.Rmd*  and *4-10x_breast_stratification.Rmd*, in turn, plot the Figure panels of Figure 6 and Supplementary Figure 13-17.
 
 ## Dependencies
 * [R 3.6.0](https://cran.r-project.org/)
