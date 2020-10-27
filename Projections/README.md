@@ -1,7 +1,8 @@
-# Projection of different datasets on TICA
+# Projection of different datasets on the atlas
 
-To demonstrate the power of out TICA, we predicted the cell types on datasets from different cancer types and varying experimental designs. We make use of FindTransferAnchors utility provided by Seurat [(Stuart et al, 2019)](https://www.cell.com/cell/fulltext/S0092-8674(19)30559-8) for transfering cell types on TICA to the query objects. The following scripts shows the necesary commands to perform this and create the plots on the article.
+To demonstrate the power of our atlas, we predicted the cell types on datasets from different cancer types and varying experimental designs. We make use of FindTransferAnchors utility provided by Seurat [(Stuart et al, 2019)](https://www.cell.com/cell/fulltext/S0092-8674(19)30559-8) for transfering cell types on TICA to the query objects. 
 
+This script showcases an example for projecting external datsets (query) onto the atlas.
 
 ## Dependencies
 
@@ -19,5 +20,5 @@ To demonstrate the power of out TICA, we predicted the cell types on datasets fr
 
 ## Data
 
-* TICA Seurat object: download it as specified in the publication (Zenodo link)
+* Atlas Seurat object: download it as specified in the publication ([Zenodo](https://zenodo.org/record/4036020#.X5hFT4hKiHt))
 * Query samples: two human uveal melanoma cancers, one human ovarian cancer, one human uveal melanoma liver metastasis, one human non-small cell lung cancer brain metastasis (including TCR) and two mice colorectal cancers (one full and one only T cells and TCR) 
