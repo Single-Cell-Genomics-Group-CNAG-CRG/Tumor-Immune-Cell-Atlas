@@ -1,4 +1,4 @@
-# Tumor Immune Cell Atlas (TICA) integration
+# Single-Cell Tumor Immune Atlas project: Dataset Integration
 
 In this folder you can find all the files related to the creation of the atlas: all the scripts leading to the integration of the datasets and the downstream processing of the atlas (clustering, annotation, etc.).
 
