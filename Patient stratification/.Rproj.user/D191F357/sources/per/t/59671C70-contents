@@ -1,14 +1,14 @@
 ---
-title: "TICA_Projection_BrainMet_P12"
+title: "Projecting data on the Single-Cell Tumor Immune Atlas"
 date: "`r format(Sys.time(), '%b %Y')`"
 output:
   html_document:
     toc: yes
 ---
 
-## Projection on BrainMet P12 (SKCM)
+## Projecting data on the Single-Cell Tumor Immune Atlas
 
-The following code generates the projection of cell types by TICA on a brain metastasis sample from a patient with melanoma. For this sample we have available both scRNA-seq and TCR sequencing to check the clonality associated on the cell types.
+This is an example to project external datasets (query) onto the atlas. The following code generates the projection of cell types from the atlas on a brain metastasis sample from a patient with melanoma. For this sample we have available both scRNA-seq and TCR sequencing to check the clonality associated on the cell types.
 
 WARNING: due to huge size this script should be run on a computational cluster
 
@@ -30,13 +30,14 @@ library(RColorBrewer)
 ### Load a predefined color palette for each cell type
 
 ```{r palette, echo=FALSE}
+# this is the color palette, with names
 values <- readRDS(file="~/aux/cell_type_palette.rds")
 ```
 
-### Load TICA. Get the VariableFeatures
+### Load the atlas. Calculate 5000 VariableFeatures
 
 ```{r load atlas}
-atlas <- readRDS("~/aux/atlas_ds1000.rds") # load downsampled atlas
+atlas <- readRDS("~/aux/atlas_ds1000.rds") # load downsampled atlas (1000 cells per cell type)
 atlas <- subset(atlas, new_cell_types != "Mast cells") 
 Idents(atlas) <- "new_cell_types"
 atlas <- FindVariableFeatures(atlas, assay = "RNA", nfeatures = 5000) # 5000 Var.Feat for the RNA assay
@@ -50,7 +51,7 @@ Idents(query) <- query$clusters
 levels(query$clusters) <- c(1:length(unique(query$clusters))) # rename clusters from 1 to n
 ```
 
-### We use FindTransferAnchors utility provided by Seurat (Stuart et al, 2019) for transfering cell type on TICA to the query object
+### We use FindTransferAnchors utility provided by Seurat (Stuart et al, 2019) for transfering the cell types from the atlas to the query object
 
 ```{r find anchors, echo=FALSE} 
 anchors <- FindTransferAnchors(reference = atlas, # find anchors between query and atlas
@@ -77,7 +78,7 @@ flextable(tab) %>%
   align(align = "center", part = "all")
 ```
 
-### Plot the TICA predictions and their associated clonal size
+### Plot the predictions and their associated clonal size
 
 ```{r plots, results = "markup", fig.height=10, fig.width=12, echo=FALSE}
 # plot umap colored by original cell type, predicted cell type and clusters
