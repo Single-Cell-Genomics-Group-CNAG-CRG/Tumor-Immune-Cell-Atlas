@@ -1,7 +1,8 @@
 # Projection of different datasets on the atlas
 
-To demonstrate the power of our atlas, we predicted the cell types on datasets from different cancer types and varying experimental designs. We make use of FindTransferAnchors utility provided by Seurat [(Stuart et al, 2019)](https://www.cell.com/cell/fulltext/S0092-8674(19)30559-8) for transfering cell types on TICA to the query objects. The following scripts shows the necesary commands to perform this and create the plots on the article.
+To demonstrate the power of our atlas, we predicted the cell types on datasets from different cancer types and varying experimental designs. We make use of FindTransferAnchors utility provided by Seurat [(Stuart et al, 2019)](https://www.cell.com/cell/fulltext/S0092-8674(19)30559-8) for transfering cell types on TICA to the query objects. 
 
+This script showcases an example for projecting external datsets (query) onto the atlas.
 
 ## Dependencies
 
