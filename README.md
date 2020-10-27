@@ -1,7 +1,7 @@
 # Tumor-Immune-Cell-Atlas
 Code repository for the Single-Cell Tumor Immune Atlas project.
 
-Find our preprint [here](https://www.biorxiv.org/content/10.1101/2020.10.26.354829v1) (**doi**: [https://doi.org/10.1101/2020.10.26.354829](https://doi.org/10.1101/2020.10.26.354829)) by **Paula Nieto**, **Marc Elosua-Bayes**, **Holger Heyn** *et al*.
+Find our preprint here:[https://doi.org/10.1101/2020.10.26.354829](https://doi.org/10.1101/2020.10.26.354829).
 
 ![](misc/atlas.png)
 
