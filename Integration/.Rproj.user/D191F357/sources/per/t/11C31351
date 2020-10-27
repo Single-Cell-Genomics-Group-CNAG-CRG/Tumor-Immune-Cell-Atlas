@@ -1,0 +1,24 @@
+{
+    "id": "11C31351",
+    "path": "~/GitHub/Tumor-Immune-Cell-Atlas/Integration/6-clustering.R",
+    "project_path": "6-clustering.R",
+    "type": "r_source",
+    "hash": "413253242",
+    "contents": "",
+    "dirty": false,
+    "created": 1603810559200.0,
+    "source_on_save": false,
+    "relative_order": 7,
+    "properties": {
+        "cursorPosition": "66,0",
+        "scrollLine": "28"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1601895130,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1601895130,
+    "read_only": false,
+    "read_only_alternatives": []
+}
