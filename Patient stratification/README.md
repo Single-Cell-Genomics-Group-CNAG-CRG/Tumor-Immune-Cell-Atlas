@@ -28,4 +28,4 @@ Required packages for the code in this folder and versions used:
 * [randomForest 4.6](https://cran.r-project.org/web/packages/randomForest/)
 * [rattle 5.4.0](https://cran.r-project.org/web/packages/rattle/)
 * [caret 6.0](http://topepo.github.io/caret/index.html)
-* [scales 1.1.1]()
+* [scales 1.1.1](https://cran.r-project.org/web/packages/scales/index.html)
