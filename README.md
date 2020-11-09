@@ -32,7 +32,7 @@ Folders and content:
 See the `README.md` files in each directory for a full description.
 
 ## Getting the data
-The Single-Cell Tumor Immune Atlas dataset is open access on [Zenodo](https://zenodo.org/record/4139398#.X5_tRYhKiHs).
+The Single-Cell Tumor Immune Atlas dataset is open access on [Zenodo](https://zenodo.org/record/4263972).
 
 ## Getting the code
 
