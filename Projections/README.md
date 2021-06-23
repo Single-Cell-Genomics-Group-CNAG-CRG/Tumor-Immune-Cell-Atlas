@@ -21,4 +21,7 @@ This script showcases an example for projecting external datsets (query) onto th
 ## Data
 
 * Atlas Seurat object: download it as specified in the publication ([Zenodo](https://zenodo.org/record/4036020#.X5hFT4hKiHt))
+
 * Query samples: two human uveal melanoma cancers, one human ovarian cancer, one human uveal melanoma liver metastasis, one human non-small cell lung cancer brain metastasis (including TCR) and two mice colorectal cancers (one full and one only T cells and TCR) 
+
+[Available for download on GEO](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE158803).
