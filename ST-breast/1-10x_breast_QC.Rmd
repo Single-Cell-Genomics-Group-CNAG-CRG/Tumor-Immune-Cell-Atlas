@@ -1,12 +1,17 @@
 ---
 title: "1-10x Breast cancer samples"
 author: "Marc Elosua-Bayes"
-date: "6/12/2020"
-output: html_document
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    df_print: paged
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 
 ## Introduction
@@ -23,53 +28,61 @@ The tissue was AJCC/UICC Stage Group IIA, ER positive, PR negative, Her2 positiv
 ## Libraries
 ```{r}
 library(Seurat)
-library(Spaniel)
 library(tidyverse)
 library(Matrix)
-library(SPOTlight)
-source("utils/bin.r")
-source("utils/spatial_plot_spaniel.R")
+# source("utils/spatial_plot_spaniel.R")
 ```
 
 ## Paths
 ```{r}
-source("misc/paths.R")
-dir.create(path = sprintf("%s/%s", an_breast_10x, robj_dir),
-           showWarnings = FALSE,
-           recursive = TRUE)
+source(here::here("misc/paths.R"))
+source(here::here("utils/bin.R"))
 
-dir.create(path = sprintf("%s/%s", an_breast_10x, plt_dir),
-           showWarnings = FALSE,
-           recursive = TRUE)
+"{an_breast_10x}/{robj_dir}" %>%
+  glue::glue() %>%
+  here::here() %>%
+  dir.create(
+    path = .,
+    showWarnings = FALSE,
+    recursive = TRUE)
 
+"{an_breast_10x}/{plt_dir}" %>%
+  glue::glue() %>%
+  here::here() %>%
+  dir.create(
+    path = .,
+    showWarnings = FALSE,
+    recursive = TRUE)
 ```
 
 ## Load data
 Within this project the data is located at data/breast_visium/section_1 and data/breast_visium/section_2 respectively
 ```{r}
-data_dir <- "data/breast_visium"
-sections_dir <- list.files(path = data_dir, full.names = TRUE)
-
-breast_1 <- Seurat::Load10X_Spatial(data.dir = "data/breast_visium/section_1",
+breast_1 <- Seurat::Load10X_Spatial(data.dir = here::here("data/breast_visium/section_1"),
                         filename = "filtered_feature_bc_matrix.h5",
                         slice = "breast_1")
 breast_1[["slice"]] <- "breast_1"
 
-breast_2 <- Seurat::Load10X_Spatial(data.dir = "data/breast_visium/section_2",
+breast_2 <- Seurat::Load10X_Spatial(data.dir = here::here("data/breast_visium/section_2"),
                         filename = "filtered_feature_bc_matrix.h5",
                         slice = "breast_2")
 breast_2[["slice"]] <- "breast_2"
 ```
 
-The first slice has `r nrow(breast_1)` and `r ncol(breast_1)` samples, the second one in turn has `r nrow(breast_2)` and `r ncol(breast_2)` samples.
+The first slice has `r nrow(breast_1)` and `r ncol(breast_1)` samples, the second one in turn has `r nrow(breast_2)` and `r ncol(breast_2)` spots
 
-## Process data
+### Remove empty genes
+We start by removing those genes that aren't expressed in any of the spots overlaying the tissue
 ```{r}
-breast_1 <- Seurat::SCTransform(object = breast_1, assay = "Spatial")
-breast_1 <- Seurat::FindVariableFeatures(breast_1)
+table(rowSums(as.matrix(breast_1@assays$Spatial@counts)) == 0)
 
-breast_2 <- Seurat::SCTransform(object = breast_2, assay = "Spatial")
-breast_2 <- Seurat::FindVariableFeatures(breast_2)
+keep_genes1 <- rowSums(as.matrix(breast_1@assays$Spatial@counts)) != 0
+breast_1 <- breast_1[keep_genes1, ]
+
+table(rowSums(as.matrix(breast_2@assays$Spatial@counts)) == 0)
+
+keep_genes2 <- rowSums(as.matrix(breast_2@assays$Spatial@counts)) != 0
+breast_2 <- breast_2[keep_genes2, ]
 ```
 
 In order to work with multiple slices in the same Seurat object, we provide the merge function.
@@ -77,61 +90,241 @@ In order to work with multiple slices in the same Seurat object, we provide the 
 breast_merged <- merge(breast_1, breast_2)
 ```
 
+## Process data
+```{r}
+breast_merged <- Seurat::SCTransform(object = breast_merged,
+                                     assay = "Spatial")
+# breast_merged <- Seurat::FindVariableFeatures(breast_merged)
+```
 
 This then enables joint dimensional reduction and clustering on the underlying RNA expression data.
 ```{r}
-Seurat::DefaultAssay(breast_merged) <- "SCT"
-Seurat::VariableFeatures(breast_merged) <- c(Seurat::VariableFeatures(breast_1),
-                                             Seurat::VariableFeatures(breast_2))
+# Seurat::DefaultAssay(breast_merged) <- "SCT"
+# Seurat::VariableFeatures(breast_merged) <- c(Seurat::VariableFeatures(breast_1),
+#                                              Seurat::VariableFeatures(breast_2))
 breast_merged <- Seurat::RunPCA(breast_merged,
-                                verbose = FALSE)
-breast_merged <- Seurat::FindNeighbors(breast_merged,
-                                       dims = 1:30)
-breast_merged <- Seurat::FindClusters(breast_merged,
-                                      verbose = FALSE,
-                                      resolution = c(0.1, 0.25, 0.5, 0.8, 1))
-breast_merged <- Seurat::RunUMAP(breast_merged,
-                                 dims = 1:30)
+                                verbose = FALSE) %>%
+  Seurat::FindNeighbors(., dims = 1:30, verbose = FALSE) %>%
+  Seurat::FindClusters(.,
+                       verbose = FALSE,
+                       resolution = c(0.1, 0.25, 0.5, 0.8, 1)) %>%
+  Seurat::RunUMAP(., dims = 1:30, verbose = FALSE)
 ```
 
-## QC visualization
-For the QC we're going to look at the number of RNA counts and the number of genes detected per spot.
+Add mitochondrial and ribosomal %
 ```{r}
-breast_merged[["percent.mt"]] <- PercentageFeatureSet(breast_merged, pattern = "^MT-")
-spt_plt <- Seurat::SpatialFeaturePlot(object = breast_merged,
-                                      features = c("nCount_Spatial", "nFeature_Spatial", "percent.mt"),)
-spt_plt
+# Collect all genes coded on the mitochondrial genome
+breast_merged[["percent.mito"]] <- Seurat::PercentageFeatureSet(
+  object = breast_merged,
+  pattern = "^MT-")
+summary(breast_merged[["percent.mito"]])
 
-ft_plt <- Seurat::VlnPlot(object = breast_merged, 
-                          features = c("nCount_Spatial", "nFeature_Spatial", "percent.mt"),
-                          group.by = "slice")
-ft_plt
-
-SPOTlight::plot_image(img_path = "data/breast_visium/section_1/spatial/tissue_lowres_image.png")
-SPOTlight::plot_image(img_path = "data/breast_visium/section_2/spatial/tissue_lowres_image.png")
+# Collect all genes coding for ribosomal proteins
+breast_merged[["percent.ribo"]] <- Seurat::PercentageFeatureSet(
+  object = breast_merged,
+  pattern = "^RPL|^RPS")
+summary(breast_merged[["percent.ribo"]])
 ```
 
-Both slices seem to be of good quality and similar between them which makes sense since they are from the same biopsy.
+## QC Analysis
 
-## Clustering Visualization
+### Basic features
+#### Number of genes
+We start by plotting some basic features that will help us visualize and define filtering options.
+We start by plotting the number of genes per spot, *complexity*, to assess if there are empty spots or huge disparity.
+```{r fig.height=8, fig.width=12}
+p1 <- ggplot2::ggplot() +
+  ggplot2::geom_histogram(data = breast_merged[[]], 
+                          ggplot2::aes(nFeature_Spatial),
+                          fill = "red",
+                          alpha = 0.7,
+                          color = "red",
+                          bins = 50) +
+  ggplot2::facet_wrap(. ~ slice, scales = "free") +
+  ggplot2::ggtitle("Unique genes per spot") +
+  ggplot2::labs(x = "Number of Detected Genes",
+                y = "Number of Spots") +
+  ggpubr::theme_pubr()
+
+p1
+```
+
+After looking at the distribution we are also going to look at how these spots look on the tissue
+```{r fig.height=12, fig.width=12}
+Seurat::SpatialFeaturePlot(
+    object = breast_merged,
+    features = "nFeature_Spatial") &
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5, size = 18))
+```
+
+#### Number of reads
+Next we want to look at the number of reads captured per spot, this should correlate with spot complexity and will allow us to see regions with higher transcriptional activity.
+```{r fig.height=8, fig.width=12}
+p2 <- ggplot2::ggplot() +
+  ggplot2::geom_histogram(data = breast_merged[[]],
+                          ggplot2::aes(nCount_Spatial),
+                          fill = "red",
+                          alpha = 0.7,
+                          color = "red",
+                          bins = 50) +
+  ggplot2::facet_wrap(. ~ slice, scales = "free") +
+  ggplot2::ggtitle("Total counts per spots") +
+  ggplot2::labs(x = "Library Size (total UMI)",
+                y = "Number of Spots") +
+  ggpubr::theme_pubr()
+
+p2
+```
+
+
+```{r fig.height=12, fig.width=12}
+Seurat::SpatialFeaturePlot(
+    object = breast_merged,
+    features = "nCount_Spatial") &
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5, size = 18))
+```
+
+#### Gene counts
+Another characteristic we want to look at is how many counts per gene there are since we want to remove lowly expressed genes which aren't giving information but potentially introducing noise.
+```{r fig.height=8, fig.width=12}
+count_mtrx <- Seurat::GetAssayData(object = breast_merged,
+                                   slot = "counts",
+                                   assay = "Spatial")
+
+gene_attr <- lapply(c("slice_1", "slice_2"), function(id) {
+  if (id == "slice_1") tail_id <- "_1" else tail_id <- "_2"
+  
+  mask <- stringr::str_detect(
+    string = colnames(count_mtrx),
+    pattern = tail_id)
+  
+  gene_attr <- data.frame(
+    nUMI = Matrix::rowSums(count_mtrx[, mask]), 
+    nSpots = Matrix::rowSums(count_mtrx[, mask] > 0),
+    slice = id)
+}) %>%
+  dplyr::bind_rows()
+
+p3 <- ggplot2::ggplot() +
+  ggplot2::geom_histogram(data = gene_attr,
+                          ggplot2::aes(nUMI),
+                          fill = "red",
+                          alpha = 0.7,
+                          color = "red",
+                          bins = 50) +
+  ggplot2::facet_wrap(. ~ slice, scales = "free") +
+  ggplot2::scale_x_log10() +
+  ggplot2::ggtitle("Total counts per gene (log10 scale)") +
+  ggpubr::theme_pubr()
+p3
+```
+
+#### Gene ubiquitousness
+We also look at on how many spots each gene is detected, we see there are a few genes expressed in almost all the spots while and a majority of genes detected in few spots.
+```{r fig.height=8, fig.width=12}
+p4 <- ggplot2::ggplot() +
+  ggplot2::geom_histogram(data = gene_attr,
+                          ggplot2::aes(nSpots),
+                          fill = "red",
+                          alpha = 0.7,
+                          color = "red",
+                          bins = 50) +
+  ggplot2::facet_wrap(. ~ slice, scales = "free") +
+  ggplot2::ggtitle("Total spots per gene") +
+  ggpubr::theme_pubr()
+
+p4
+```
+
+#### Mitochondrial %
+Next we take a look at the mitochondrial %; This metric can help us get a first glimpse of metabolic activity and/or necrotic regions - 10X explains [here](https://kb.10xgenomics.com/hc/en-us/articles/360001086611-Why-do-I-see-a-high-level-of-mitochondrial-gene-expression-)
+```{r fig.height=8, fig.width=12}
+p5 <- ggplot2::ggplot() +
+  ggplot2::geom_histogram(data = breast_merged[[]], 
+                          ggplot2::aes(percent.mito),
+                          fill = "red",
+                          alpha = 0.7,
+                          color = "red",
+                          bins = 50) +
+  ggplot2::facet_wrap(. ~ slice, scales = "free") +
+  ggplot2::ggtitle("Mitochondrial % per spot") +
+  ggplot2::labs(x = "Mitochondrial % ",
+                y = "Number of Spots") +
+  ggpubr::theme_pubr()
+p5
+```
+
+```{r fig.height=12, fig.width=12}
+Seurat::SpatialFeaturePlot(
+  object = breast_merged,
+  features = "percent.mito") &
+  ggplot2::theme(plot.title = element_text(hjust = 0.5, size = 18))
+```
+
+#### Ribosomal %
+Lastly we look at the ribosomal % which gives us insight into which regions are the most transcriptomically active when looked side by side with the number of detected genes.
+```{r fig.height=8, fig.width=12}
+p6 <- ggplot2::ggplot() +
+  ggplot2::geom_histogram(data = breast_merged[[]], 
+                          ggplot2::aes(percent.ribo),
+                          fill = "red",
+                          alpha = 0.7,
+                          color = "red",
+                          bins = 50) +
+  ggplot2::facet_wrap(. ~ slice, scales = "free") +
+  ggplot2::ggtitle("Ribosomal % per spot") +
+  ggplot2::labs(x = "Ribosomal % ",
+                y = "Number of Spots") +
+  ggpubr::theme_pubr()
+p6
+```
+
+```{r fig.height=12, fig.width=12}
+Seurat::SpatialFeaturePlot(
+  object = breast_merged,
+  features = "percent.ribo") +
+  ggplot2::theme(plot.title = element_text(hjust = 0.5, size = 18))
+```
+
+### Feature covariation
+Next we look at how these features covariate.
+```{r fig.height=15, fig.width=15}
+plt_covar_ls <- qc_covar_plots(se = breast_merged,
+                               nfeat = "nFeature_Spatial",
+                               ncount = "nCount_Spatial",
+                               slot = "counts",
+                               assay = "Spatial",
+                               percent.mito = "percent.mito",
+                               percent.ribo = "percent.ribo",
+                               facet = "slice")
+
+cowplot::plot_grid(
+  plotlist = plt_covar_ls,
+  ncol = 2,
+  align = "hv",
+  axis = "trbl")
+```
+
+## Save RDS
+Save the object to use downstream.
 ```{r}
-Seurat::DimPlot(object = breast_merged,
-                group.by = c("SCT_snn_res.0.1",
-                             "slice"),
-                label = TRUE)
-Seurat::SpatialDimPlot(object = breast_merged,
-                       group.by = c("SCT_snn_res.0.1"),
-                       label = TRUE) +
-  theme(legend.text = element_text(size = 15)) +
-  guides(fill = guide_legend(override.aes = list(size = 5)))
+lapply(c("breast_1", "breast_2"), function(id) {
+  
+  breast_sub <- breast_merged[, breast_merged$slice == id]
+  
+  # Remove other images
+  breast_sub@images <- breast_sub@images[Seurat::Images(breast_sub) == id]
+  
+  "{an_breast_10x}/{robj_dir}/qc_se_{id}.rds" %>%
+    glue::glue() %>%
+    here::here() %>%
+    saveRDS(
+      object = breast_sub,
+      file = .)
+})
 ```
 
-## Save data
+## Session Info
 ```{r}
-Seurat::Idents(breast_merged) <- breast_merged$SCT_snn_res.0.1
-saveRDS(object = breast_merged,
-        file = sprintf("%s/%s/breast_merged_processed.RDS", an_breast_10x, robj_dir))
+sessionInfo()
 ```
-
-
-

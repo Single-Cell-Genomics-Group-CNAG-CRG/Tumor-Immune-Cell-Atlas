@@ -1,0 +1,245 @@
+---
+author: "Marc Elosua-Bayes"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+params: 
+    sample_id: "Default!"
+    clust_vr: "lv1_annot"
+title: "`r sprintf('RCTD-10x_breast_immune_reference %s', {params$sample_id})`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width = "100%", fig.align='center', 
+                      message = FALSE, warning = FALSE)
+options(width = 1200)
+```
+
+## Introduction
+In this R markdown document we will compare the deconvolution obtained from SPOTlight and RCTD.
+
+RCTD original paper can be found [here](https://doi.org/10.1038/s41587-021-00830-w) and the GitHub repo [here](https://github.com/dmcable/RCTD).
+
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(Matrix)
+# devtools::install_github("dmcable/RCTD", build_vignettes = TRUE)
+library(RCTD)
+source(here::here("utils/bin.r"))
+```
+
+## Paths
+```{r}
+source(here::here("misc/paths.R"))
+
+"{an_oro}/{robj_dir}" %>%
+  glue::glue() %>%
+  here::here() %>%
+  dir.create(
+    path = ,
+    showWarnings = FALSE,
+    recursive = TRUE)
+
+"{an_oro}/{plt_dir}" %>%
+  glue::glue() %>%
+  here::here() %>%
+  dir.create(
+    path = ,
+    showWarnings = FALSE,
+    recursive = TRUE)
+```
+
+## Parameters
+```{r}
+set.seed(1243)
+
+sample_id <- params$sample_id
+# sample_id <- "161429"
+clust_vr <- params$clust_vr
+# clust_vr <- "new_annot"
+# clust_vr <- "old_cell_types"
+
+trn <- "melanoma"
+cl_n <- 100
+hvg <- 3000
+ntop <- NULL
+transf <- "uv"
+method <- "nsNMF"
+min_cont <- 0
+
+if (is.null(ntop)) {
+  spotlight_id <- glue::glue("trn-{trn}_cln-{cl_n}_hvg-{hvg}_ntop-NULL_transf-{transf}_method-{method}_mincont-{min_cont}")
+} else {
+  spotlight_id <- glue::glue("trn-{trn}_cln-{cl_n}_hvg-{hvg}_ntop-{ntop}_transf-{transf}_method-{method}_mincont-{min_cont}")
+}
+```
+
+Create a name/color dataframe
+```{r}
+# source(here::here("misc/col_df_scrpt.R"))
+# source(here::here("misc/col_df_scrpt2.R"))
+col_df <- readRDS(here::here("misc/col_df.rds"))
+```
+
+## Load data
+Load spatial object
+```{r}
+### Spatial breast cancer
+se_obj <- "{an_oro}/{robj_dir}/processed_sp_oropharyngeal_{sample_id}.RDS" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
+```
+
+SPOTlight deconvolution
+```{r}
+decon_mtrx_ls <- "{an_oro}/{robj_dir}/decon_mtrx_atlas_{sample_id}_{spotlight_id}_{clust_vr}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
+```
+
+RCTD deconvolution
+```{r}
+myRCTD <- "{an_oro}/{robj_dir}/RCTDobj_{sample_id}_{clust_vr}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
+```
+
+## Analysis
+
+### Extract deconvolutions
+
+SPOTlight extraction and renaming
+```{r}
+decon_mtrx <- decon_mtrx_ls[[2]]
+decon_mtrx <- decon_mtrx[, colnames(decon_mtrx) != "res_ss"]
+
+# Set as 0 cell types predicted to be under 5 % of the spot
+# decon_mtrx[decon_mtrx < 0.05] <- 0
+
+# Change names to original ones and reorder according to Paula
+new_colnames <- data.frame(ct_name = colnames(decon_mtrx), stringsAsFactors = FALSE) %>%
+  dplyr::left_join(col_df, by = "ct_name") %>%
+  dplyr::pull(plt_name)
+
+colnames(decon_mtrx) <- new_colnames
+colnames(decon_mtrx) <- glue::glue("SPOTlight-{colnames(decon_mtrx)}")
+rownames(decon_mtrx) <- colnames(se_obj)
+```
+
+RCTD extraction
+```{r}
+RCTD_mtrx <- as.matrix(myRCTD@results[[1]])
+colnames(RCTD_mtrx) <- glue::glue("RCTD-{colnames(RCTD_mtrx)}")
+# RCTD_mtrx[RCTD_mtrx < 0.05] <- 0
+
+# Normalize RCTD matrix to 1
+RCTD_mtrx <- RCTD_mtrx / rowSums(RCTD_mtrx)
+```
+
+Add deconvolution matrices to Seurat object
+```{r}
+rownames(RCTD_mtrx) <- stringr::str_replace(
+  string = rownames(RCTD_mtrx),
+  pattern = "\\.",
+  replacement = "-")
+
+barcodes <- purrr::reduce(list(rownames(se_obj@meta.data),
+                   rownames(RCTD_mtrx),
+                   rownames(decon_mtrx)),
+              dplyr::intersect)
+
+RCTD_mtrx <- RCTD_mtrx[barcodes, ]
+decon_mtrx <- decon_mtrx[barcodes, ]
+
+se_obj@meta.data <- cbind(se_obj@meta.data[barcodes, ],
+                          RCTD_mtrx[barcodes, ],
+                          decon_mtrx[barcodes, ])
+
+
+```
+
+### Deconvolution comparison
+Here we are going to compare RCTD and SPOTlight deconvolutions by correlating the cell types
+```{r fig.width=20, fig.height=20}
+cor_plots <- lapply(colnames(decon_mtrx), function(i) {
+  print(i)
+  i_spot <- i
+  i_sub <- stringr::str_split(string = i, pattern = "-", simplify = TRUE, n = 2)
+  i_rctd <- glue::glue("RCTD-{i_sub[2]}")
+  
+  dat <- data.frame(
+    SPOTlight = decon_mtrx[, i_spot],
+    RCTD = RCTD_mtrx[, i_rctd],
+    check.names = FALSE)
+  
+  print(cor.test(decon_mtrx[, i_spot],
+           RCTD_mtrx[, i_rctd]))
+  
+  ggpubr::ggscatter(dat, x = "SPOTlight", y = "RCTD",
+     color = "black",
+     add = "reg.line",  # Add regressin line
+     add.params = list(color = "blue", fill = "lightgray"), # Customize reg. line
+     cor.coef = TRUE, # Add correlation coefficient. see ?stat_cor
+     cor.coeff.args = list(method = "pearson", label.sep = "\n"),
+     title = i_sub[2])
+  })
+
+
+plt_grid <- cowplot::plot_grid(plotlist = cor_plots,align = "hv", axis = "trbl")
+
+"{an_oro}/{plt_dir}/cor_grid_RCTD-SPOTlight_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = plt_grid,
+    base_height = 20,
+    base_width = 20)
+```
+
+### Visualize cell types
+Next we want to visualize the cell types side by side
+```{r}
+tissue_plots <- lapply(colnames(decon_mtrx), function(i) {
+  print(i)
+  i_spot <- i
+  i_sub <- stringr::str_split(string = i, pattern = "-", simplify = TRUE, n = 2)
+  i_rctd <- glue::glue("RCTD-{i_sub[2]}")
+  
+  Seurat::SpatialPlot(
+    object = se_obj,
+    features = c(i_spot, i_rctd),
+    alpha = c(0, 1),
+    image.alpha = 1)
+})
+
+
+tissue_grid <- cowplot::plot_grid(plotlist = tissue_plots,
+                                  align = "hv",
+                                  axis = "trbl")
+
+"{an_oro}/{plt_dir}/tissue_grid_RCTD-SPOTlight_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = tissue_grid,
+    base_height = 25,
+    base_width = 35)
+```
+
+## Session Info
+```{r}
+sessionInfo()
+```

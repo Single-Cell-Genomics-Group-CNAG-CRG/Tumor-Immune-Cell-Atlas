@@ -1,0 +1,659 @@
+---
+author: "Marc Elosua-Bayes"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+params: 
+    sample_id: "Default!"
+    clust_vr: "lv1_annot"
+title: "`r sprintf('6-digitalFISH Oropharyngeal %s', {params$sample_id})`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width = "100%", fig.align='center', 
+                      message = FALSE, warning = FALSE, cache = TRUE)
+options(width = 1200)
+```
+
+## Introduction
+
+In this Rmarkdown document we are going to plot known marker genes on the Visium slide as a subsitute to the FISH technology to response to the Reviewer's 1 comment 7.
+
+**Authors should validate spatial mapping of key cell populations using alternative approaches such as multiplexed smFISH or antibody staining. Some of the important results include 1) the co-location of T-reg with T-cytotoxic cells in both SCC and BC; 2) the co-location cancer cells with proliferative T-cells and SPP1 macrophages in SCC, 3) stromal cells, T-reg, terminally exhausted CD8 T-cells and M2 macrophages in SCC.**
+
+## Libraries
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(SPOTlight)
+library(reticulate)
+
+# conda create -n MAGIC python=3.7
+# conda install -c bioconda scprep
+# conda install matplotlib future tasklogger graphtools scipy pandas Deprecated pygsp pytz python-dateutil six threadpoolctl joblib decorator wrapt cycler kiwisolver pyparsing pillow
+# conda install -c anaconda zlib
+# ~/anaconda3/envs/MAGIC/bin/pip3 install magic-impute
+#
+path_to_python <- "/media/data1/anaconda3/envs/MAGIC"
+# path_to_python <- "/scratch/groups/hheyn/software/anaconda3/envs/MAGIC/"
+# reticulate::use_python(path_to_python, required = TRUE)
+reticulate::use_condaenv(path_to_python)
+reticulate::py_discover_config(required_module = "magic")
+reticulate::py_config()
+library(Rmagic)
+
+source(here::here("misc/paths.R"))
+source(here::here("utils/bin.r"))
+```
+
+Source name/color dataframe
+```{r}
+# source(here::here("misc/col_df_scrpt.R"))
+col_df <- readRDS(here::here("misc/col_df.rds"))
+```
+
+## Parameters
+```{r}
+sample_id <- params$sample_id
+# sample_id <- "161429"
+clust_vr <- "lv1_annot"
+
+trn <- "melanoma"
+cl_n <- 100
+hvg <- 3000
+ntop <- NULL
+transf <- "uv"
+method <- "nsNMF"
+min_cont <- 0
+
+if (is.null(ntop)) {
+  spotlight_id <- glue::glue("trn-{trn}_cln-{cl_n}_hvg-{hvg}_ntop-NULL_transf-{transf}_method-{method}_mincont-{min_cont}")
+} else {
+  spotlight_id <- glue::glue("trn-{trn}_cln-{cl_n}_hvg-{hvg}_ntop-{ntop}_transf-{transf}_method-{method}_mincont-{min_cont}")
+}
+
+source(here::here("misc/digitalFISH_dict.R"))
+set.seed(123)
+```
+
+Create a name/color dataframe
+```{r}
+# source(here::here("misc/col_df_scrpt.R"))
+# source(here::here("misc/col_df_scrpt2.R"))
+col_df <- readRDS(here::here("misc/col_df.rds"))
+```
+
+## Load data
+We are going to start by loading the data from the previous scripts *1-australis_oroph_processing.Rmd* and *3-australia_oroph_deconv.Rmd*.
+```{r}
+se_obj <- "{an_oro}/{robj_dir}/processed_sp_oropharyngeal_{sample_id}.RDS" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
+# st_ls <- readRDS(file = here::here(glue::glue("{an_oro}/{robj_dir}/processed_st_ls_oropharyngeal.RDS")))
+
+markers_df <- "data/immune_reference/TICA_markers.xlsx" %>%
+  here::here() %>%
+  readxl::read_xlsx(path = .)
+
+decon_mtrx_ls <- "{an_oro}/{robj_dir}/decon_mtrx_atlas_{sample_id}_{spotlight_id}_{clust_vr}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
+```
+
+Change names to original ones and reorder according to Paula
+```{r}
+decon_mtrx <- decon_mtrx_ls[[2]]
+decon_mtrx <- decon_mtrx[, colnames(decon_mtrx) != "res_ss"]
+
+# Set as 0 cell types predicted to be under 0.1 % of the spot
+decon_mtrx[decon_mtrx < 0.001] <- 0
+
+new_colnames <- data.frame(ct_name = colnames(decon_mtrx), stringsAsFactors = FALSE) %>%
+  dplyr::left_join(col_df, by = "ct_name") %>%
+  dplyr::pull(plt_name)
+
+colnames(decon_mtrx) <- new_colnames
+```
+
+We join the deconvolution matrix with the Seurat object metadata:
+```{r}
+se_obj@meta.data <- cbind(se_obj@meta.data, decon_mtrx)
+ct_nm <- colnames(decon_mtrx)
+```
+
+## Analysis
+### MAGIC denoising
+Since we are going to be computing correlations between genes and porportions we are going to run [MAGIC](https://magic.readthedocs.io/en/stable/) developped by Smita Krishnaswamy's to try to fill in the drop out reads in the spots. `MAGIC` is a Markov Affinity-based Graph Imputation of Cells used for denoising high-dimensional data most commonly applied to single-cell RNA sequencing data. MAGIC learns the manifold data, using the resultant graph to smooth the features and restore the structure of the data based on their k-nearest neighbors. 
+```{r}
+gene_vec <- c(unique(unlist(purrr::map(marker_genes_dict, "markers"))), "BCL6", "SEMA4A", "CXCR5")
+
+gene_vec <- gene_vec[gene_vec %in% rownames(se_obj)]
+
+se_obj <- Rmagic::magic(
+  data = se_obj,
+  assay = "Spatial",
+  counts = "data",
+  genes = gene_vec,
+  knn = 2,
+  knn.max = NULL,
+  decay = 1,
+  t = 3,
+  npca = 100,
+  init = NULL,
+  t.max = 20,
+  knn.dist.method = "euclidean",
+  verbose = 1,
+  n.jobs = 1,
+  seed = 123)
+
+se_obj@active.assay <- 'MAGIC_Spatial'
+```
+
+### Marker gene location
+Look at the location where the marker genes are expressed along with the cell types
+```{r}
+plt_ls <- lapply(names(marker_genes_dict), function(ct_nm){
+  print(ct_nm)
+  feat <- c(unlist(marker_genes_dict[[ct_nm]]))
+  print(marker_genes_dict[[ct_nm]])
+  # Iterate over cell types
+  tmp_plt <- Seurat::SpatialFeaturePlot(object = se_obj,
+                                        features = feat,
+                                        alpha = c(0, 1))
+  return(tmp_plt)
+  })
+  # })
+
+ggpubr::ggexport(filename = here::here(glue::glue("{an_oro}/{plt_dir}/oro_markers_ct.pdf")),
+                 plotlist = plt_ls,
+                 height = 10,
+                 width = 20)
+```
+
+### Correlation Cell type - Marker
+Look at correlations between cell types and the marker genes
+```{r}
+cor_df <- lapply(names(marker_genes_dict), function(i) {
+  if ("cell_types"  %in% names(marker_genes_dict[[i]])) {
+    print(i)
+    df_tmp <- data.frame(marker_genes_dict[[i]][["cell_types"]])
+    colnames(df_tmp) <- "cell_type"
+    df <- lapply(marker_genes_dict[[i]][["markers"]], function(g) {
+     df_tmp$marker <-  g
+     return(df_tmp)
+    }) %>% dplyr::bind_rows()
+    
+    return(df)
+  }
+  
+}) %>% dplyr::bind_rows()
+
+cor_df
+```
+
+Plot correlation 
+```{r}
+# ct <- "Cytotoxic CD8 T cells"
+# unique(as.character(cor_df$cell_type))
+plt_cor_ls <- lapply(unique(as.character(cor_df$cell_type)), function(ct) {
+  print(ct)
+  genes <- cor_df %>% dplyr::filter(cell_type == ct) %>% dplyr::pull(marker)
+  
+  plt_grid <- lapply(genes, function(g) {
+    print(g)
+    if (g %in% rownames(se_obj@assays$MAGIC_Spatial@data)) {
+      dat <- data.frame(type = se_obj@meta.data[, ct],
+                       gene = se_obj@assays$MAGIC_Spatial@data[g, ])
+    } else if (g %in% rownames(se_obj@assays$Spatial@data)) {
+      dat <- data.frame(type = se_obj@meta.data[, ct],
+                       gene = se_obj@assays$Spatial@data[g, ])
+    } else { dat <- NULL }
+    
+    if (!is.null(dat)) {
+      ggpubr::ggscatter(
+      data = dat,
+      x = "type",
+      y = "gene",
+      add = "reg.line",
+      conf.int = TRUE
+      ) +
+      labs(x = ct,
+           y = g) +
+      ggpubr::stat_cor(method = "pearson")
+    }
+    
+  }) %>% cowplot::plot_grid(plotlist = .)
+  
+  title <- cowplot::ggdraw() +
+    cowplot::draw_label(ct)
+  plt_grid <- cowplot::plot_grid(title, plt_grid, ncol = 1, rel_heights = c(0.15, 1))
+  
+  return(plt_grid)
+})
+
+"{an_oro}/{plt_dir}/oro_correlation_ct_gene.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  ggpubr::ggexport(
+    plotlist = plt_cor_ls,
+    filename = .,
+    width = 12,
+    height = 10)
+```
+
+### Compute relation between opposing genes
+We are also interested in computing gene-gene relations after imputing missing results with `MAGIC`. This imputation is carried out for this specific purpose and is not used in other analysis. When using imputation methods we chose `MAGIC` since it is cited as one of the better imputation methods as benchmarked [here](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02132-x). However as specified in the previous paper and  [others](https://f1000researchdata.s3.amazonaws.com/manuscripts/20056/ac5e3bc9-60b7-4f75-a10d-5af45713423b_16613_-_tallulah_andrews_v2.pdf?doi=10.12688/f1000research.16613.2&numberOfBrowsableCollections=27&numberOfBrowsableInstitutionalCollections=5&numberOfBrowsableGateways=26) these methods should be used with caution.
+
+We also thought of using `DREMI` as the method to quantify gene-gene relations but since we expect linear relationships between them we used correlation.
+```{r}
+comp_ls <- c("Treg cells_CD8 terminally exhausted",
+             "Treg cells_Cytotoxic T cells",
+             "Treg cells_SPP1 Macrophages",
+             "Treg cells_M2 macrophages",
+             "cancer_SPP1 Macrophages",
+             "stroma_Treg cells",
+             "stroma_Cytotoxic T cells")
+
+Seurat::SpatialFeaturePlot(object = se_obj, features = "EPCAM", alpha = c(0.1, 1))
+
+Seurat::SpatialFeaturePlot(object = se_obj,
+                           features = marker_genes_dict[["stroma"]][["markers"]],
+                           alpha = c(0.1, 1))
+```
+
+#### MAGIC correlation
+Plot correlations using MAGIC denoising imputation
+```{r}
+lapply(comp_ls, function(pair) {
+  # Extract cell types to plot markers from
+  cts <- stringr::str_split(string = pair, pattern = "_", simplify = TRUE)
+  ct1 <- cts[1]
+  ct2 <- cts[2]
+  print(pair)
+  
+  # Extract marker genes
+  gene1_ls <- marker_genes_dict[[ct1]][["markers"]]
+  gene2_ls <- marker_genes_dict[[ct2]][["markers"]]
+  
+  plt_cor_ls <- lapply(gene1_ls, function(gene1) {
+    print(gene1)
+    if (gene1 %in% rownames(se_obj@assays$MAGIC_Spatial@data)) {
+      plt_grid <- lapply(gene2_ls, function(gene2) {
+        # print(gene2)
+        
+        if (gene2  %in% rownames(se_obj@assays$MAGIC_Spatial@data)) {
+          
+        # Extract gene expression
+        df <- data.frame(g1 = se_obj@assays$MAGIC_Spatial@data[gene1, ],
+                         g2 = se_obj@assays$MAGIC_Spatial@data[gene2, ])
+        ggpubr::ggscatter(
+          data = df,
+          x = "g1",
+          y = "g2",
+          add = "reg.line",
+          conf.int = TRUE
+          ) +
+          labs(x = gene1,
+               y = gene2) +
+          ggpubr::stat_cor(method = "pearson")
+        }
+      }) %>% cowplot::plot_grid(plotlist = .)
+    }
+    return(plt_grid)
+  })
+  
+  "{an_oro}/{plt_dir}/marker_correlation_{ct1}-{ct2}_MAGIC.pdf" %>%
+    glue::glue() %>%
+    here::here() %>%
+    ggpubr::ggexport(
+      plotlist = plt_cor_ls,
+      filename = .,
+      width = 15,
+      height = 15)
+})
+```
+
+#### Lognorm correlation
+Plot correlations using log transformed data
+```{r}
+lapply(comp_ls, function(pair) {
+  # Extract cell types to plot markers from
+  cts <- stringr::str_split(string = pair, pattern = "_", simplify = TRUE)
+  ct1 <- cts[1]
+  ct2 <- cts[2]
+  print(ct1)
+  print(ct2)
+  # Extract marker genes
+  gene1_ls <- marker_genes_dict[[ct1]][["markers"]]
+  gene2_ls <- marker_genes_dict[[ct2]][["markers"]]
+  
+  plt_cor_ls <- lapply(gene1_ls, function(gene1) {
+    print(gene1)
+    if (gene1 %in% rownames(se_obj@assays$MAGIC_Spatial@data)) {
+      plt_grid <- lapply(gene2_ls, function(gene2) {
+        if (gene2 %in% rownames(se_obj@assays$MAGIC_Spatial@data)) {
+          print(gene2)
+          # Extract gene expression
+          df <- data.frame(g1 = se_obj@assays$Spatial@data[gene1, ],
+                           g2 = se_obj@assays$Spatial@data[gene2, ])
+          ggpubr::ggscatter(
+            data = df,
+            x = "g1",
+            y = "g2",
+            add = "reg.line",
+            conf.int = TRUE
+            ) +
+            labs(x = gene1,
+                 y = gene2) +
+            ggpubr::stat_cor(method = "pearson")
+        }
+      }) %>% cowplot::plot_grid(plotlist = .)
+    }
+    return(plt_grid)
+  })
+  
+  "{an_oro}/{plt_dir}/marker_correlation_{ct1}-{ct2}_lognorm.pdf" %>%
+    glue::glue() %>%
+    here::here() %>%
+    ggpubr::ggexport(
+      plotlist = plt_cor_ls,
+      filename = ,
+      width = 15,
+      height = 15)
+})
+```
+
+### Look at CD8 cytotoxic
+Given the positive correlation we are seeing between cytotoxic and exhaustion markers: ("CD8A", "CD8B", "CCL4", "CCL5", "GZMB", "GZMA", "GNLY") and c("FOXP3", "CTLA4", "HAVCR2", "PDCD1") respectively.
+
+`Juan Nieto` suggests the following: correlate markers like TCF7 (TCF1) or TOX, TOX2 with CD8 cytotoxic.  FOXP3  is an exclusive marker of CD4 Tregs and maybe we are seeing CD8 together with TREGS. He would also like to see a correlation between PDCD1, LAG3 and HAVCR2 with CD8 cytotoxic markers
+```{r}
+cd8_interest
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  slot = "data",
+  features = cd8_interest,
+  alpha = c(0.1, 1))
+
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  slot = "data",
+  features = marker_genes_dict[["Cytotoxic T cells"]][["markers"]],
+  alpha = c(0.1, 1))
+```
+
+Look at correlation between predicted CD8 T cells and markers
+```{r}
+cd8_plt_grid <- lapply(cd8_interest, function(gene) {
+  # Extract gene expression
+  df <- data.frame(cell_type = se_obj@meta.data[, "CD8 cytotoxic"],
+                   g2 = se_obj@assays$Spatial@data[gene, ])
+  ggpubr::ggscatter(
+    data = df,
+    x = "cell_type",
+    y = "g2",
+    add = "reg.line",
+    conf.int = TRUE
+    ) +
+    labs(x = "CD8 cytotoxic",
+         y = gene) +
+    ggpubr::stat_cor(method = "pearson")
+}) %>% cowplot::plot_grid(plotlist = .)
+cd8_plt_grid
+```
+
+Lastly we also want to take a look at the correlation between GZMA and GZMB with TCF7
+```{r}
+gene_plt_grid <- lapply(c("GZMA", "GZMB"), function(gene) {
+  # Extract gene expression
+  df <- data.frame(ct = se_obj@assays$MAGIC_Spatial@data["TCF7", ],
+                   g2 = se_obj@assays$MAGIC_Spatial@data[gene, ])
+  ggpubr::ggscatter(
+    data = df,
+    x = "ct",
+    y = "g2",
+    add = "reg.line",
+    conf.int = TRUE
+    ) +
+    labs(x = "TCF7",
+         y = gene) +
+    ggpubr::stat_cor(method = "pearson")
+}) %>% cowplot::plot_grid(plotlist = .)
+
+
+gene_plt_grid <- lapply(c("GZMA", "GZMB"), function(gene) {
+  # Extract gene expression
+  df <- data.frame(ct = se_obj@assays$SCT@data["TCF7", ],
+                   g2 = se_obj@assays$SCT@data[gene, ])
+  ggpubr::ggscatter(
+    data = df,
+    x = "ct",
+    y = "g2",
+    add = "reg.line",
+    conf.int = TRUE
+    ) +
+    labs(x = "TCF7",
+         y = gene) +
+    ggpubr::stat_cor(method = "pearson")
+}) %>% cowplot::plot_grid(plotlist = .)
+
+gene_plt_grid
+
+```
+
+### Correlation matrix
+We are going to compute a correlation matrix between the genes of interest. If we look at the reviewer's comment:
+
+**...1) the co-location of T-reg with T-cytotoxic cells in both SCC and BC; 2) the co-location cancer cells with proliferative T-cells and SPP1 macrophages in SCC, 3) stromal cells, T-reg, terminally exhausted CD8 T-cells and M2 macrophages in SCC.**
+
+We see that the main cell types of interest are *regulatory T cells*, *cytotoxic T cells*, *Proliferating T cells*, *SPP1 macrophages*, *stromal cells*, *terminally exhausted CD8 T-cells*, *M2 macrophages*. We will compute the marker gene correlation matrix of the aforementioned  cell types as well as adding *EPCAM* as a marker for cancer cells. Furthermore, we will remove proliferating T cells since we show how the spatial mapping might be spurious due to the proliferation marker genes expressed by cancer genes within the tumor region. 
+
+```{r}
+library(ggcorrplot)
+
+ct_int <- c("M2 macrophages", "M1 macrophages", "SPP1 Macrophages", "Cytotoxic T cells",
+            "Terminally exhausted CD8 T cells", "Treg cells", "cancer",
+            "stroma", "Proliferative", "pDC")
+
+markers_int <- purrr::map(marker_genes_dict[ct_int], "markers") %>%
+  unlist() %>% unique()
+markers_int <- c(markers_int,
+                 "MERTK" # SPP1 high macrop
+                 )
+
+correlation_heatmap(
+  se_obj = se_obj,
+  genes = markers_int,
+  # feats = ct,
+  assay = "MAGIC_Spatial")
+
+```
+
+Lastly we will look at specific genes for the reviewer's co-localization of interest.
+**...1) the co-location of T-reg with T-cytotoxic cells in both SCC and BC; 2) the co-location cancer cells with proliferative T-cells and SPP1 macrophages in SCC, 3) stromal cells, T-reg, terminally exhausted CD8 T-cells and M2 macrophages in SCC.**
+
+```{r}
+quick_scatter <- function(vec1, vec2, n1, n2) {
+  df <- data.frame(x = vec1,
+                   y = vec2)
+  ggpubr::ggscatter(
+    data = df,
+    x = "x",
+    y = "y",
+    add = "reg.line",
+    conf.int = TRUE
+    ) +
+    labs(x = n1,
+         y = n2) +
+    ggpubr::stat_cor(method = "pearson")
+  
+}
+```
+
+We start by looking at the first point T-reg vs T-cytotoxic. To do so we are going to use the following marker genes: 
+* FOXP3 as a marker for T regs
+* CD8A as a marker for T cytotoxic
+* GZMA as a marker for cytotoxicity. It is important to note that some Tregs can express GZMA so it is important to look at it in parallel with CD8A
+* TCF7 as a marker for pre-exhausted CD8 T cells
+
+```{r}
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  features = c("T cells regulatory",
+               "CD8 cytotoxic",
+               "CD8 pre-exhausted",
+               "CD8 terminally exhausted"),
+  alpha = c(0, 1))
+
+# Markers for Tregs
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  features = marker_genes_dict[["Treg cells"]][["markers"]],
+  alpha = c(0, 1))
+
+# Markers for pre-exhausted
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  features = c("CD8A", "CD8B"),
+  alpha = c(0, 1))
+
+# T-reg with T-cytotoxic cells
+# copm1_sp <- Seurat::SpatialFeaturePlot(
+#   object = se_obj,
+#   features = c("FOXP3", # Treg
+#                "CD8A", # CD8
+#                "GZMA")) # Cytotoxic
+# 
+# sct11 <- quick_scatter(
+#   vec1 = se_obj@assays$MAGIC_Spatial@data["FOXP3", ],
+#   vec2 = se_obj@assays$MAGIC_Spatial@data["CD8A", ],
+#   n1 = "FOXP3",
+#   n2 = "CD8A")
+# 
+# sct12 <- quick_scatter(
+#   vec1 = se_obj@assays$MAGIC_Spatial@data["FOXP3", ],
+#   vec2 = se_obj@assays$MAGIC_Spatial@data["GZMA", ],
+#   n1 = "FOXP3",
+#   n2 = "GZMA")
+# 
+# sct13 <- quick_scatter(
+#   vec1 = se_obj@assays$MAGIC_Spatial@data["FOXP3", ],
+#   vec2 = se_obj@assays$MAGIC_Spatial@data["TCF7", ],
+#   n1 = "FOXP3",
+#   n2 = "TCF7")
+# 
+# cowplot::plot_grid(plotlist = list(
+#   copm1_sp[[1]],
+#   copm1_sp[[2]],
+#   copm1_sp[[3]],
+#   sct11,
+#   sct12,
+#   sct13),
+#   align = "hv",
+#   axis = "trbl"
+#   )
+```
+
+Following up we want to validate that the cells co-localizing with Tregs are the pre-exhausted and not the cytotoxic.
+We will look at TOX, TOX2 for markers of Terminally exhausted and TCF7 and EOMES for pre-exhausted.
+```{r}
+# Markers for Terminally exhausted
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  features = c(marker_genes_dict[["Terminally exhausted CD8 T cells"]][["markers"]], "TCF7"),
+  alpha = c(0, 1))
+
+# Markers for pre-exhausted
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  features = c("TCF7", "GZMA", "GZMB"),
+  alpha = c(0, 1))
+```
+
+Lastly we can look at a correlation of the gene expression of the characteristic genes for these cell types along with the predicted proportions of these cell types.
+```{r}
+library(ggcorrplot)
+
+r1_1 <- c("Terminally exhausted CD8 T cells", "Treg cells", "Cytotoxic T cells")
+
+markers_r1 <- purrr::map(marker_genes_dict[r1_1], "markers") %>%
+  unlist() %>% unique()
+
+markers_r1 <- c(markers_r1,
+                 "TCF7" # SPP1 high macrop
+                 )
+
+correlation_heatmap(
+  se_obj = se_obj,
+  genes = markers_int,
+  # feats = ct,
+  assay = "MAGIC_Spatial")
+```
+
+
+co-location cancer cells with proliferative T-cells and SPP1 macrophages 
+```{r}
+# Markers for Cancer and proliferation
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  features = c(
+    marker_genes_dict[["cancer"]][["markers"]],
+    marker_genes_dict[["Proliferative"]][["markers"]]),
+  alpha = c(0, 1))
+
+# Markers for M1 and M2 macrophages
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  features = marker_genes_dict[["M1 macrophages"]][["markers"]],
+  alpha = c(0, 1))
+
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  features = marker_genes_dict[["M2 macrophages"]][["markers"]],
+  alpha = c(0, 1))
+
+```
+
+stromal cells, T-reg, terminally exhausted CD8 T-cells and M2 macrophages in SCC.
+```{r}
+# Cell types of interest
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  features = c("T cells regulatory", "CD8 terminally exhausted", "TAMs M2"),
+  alpha = c(0, 1))
+
+# Markers for cell types of interest
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  features = marker_genes_dict[["Treg cells"]][["markers"]],
+  alpha = c(0, 1))
+
+Seurat::SpatialFeaturePlot(
+  object = se_obj,
+  # features = marker_genes_dict[["Terminally exhausted CD8 T cells"]][["markers"]],
+  features = c("TOX", "TOX2", "CCL5", "ENTPD1"),
+  alpha = c(0, 1))
+
+Seurat::SpatialFeaturePlot(
+  object = se_st,
+  # features = marker_genes_dict[["M2 macrophages"]][["markers"]],
+  features = c("CHI3L1", "CLEC7A", "EGR2", "MRC1"),
+  alpha = c(0, 1))
+
+```
+
+
+## Session Info
+```{r}
+sessionInfo()
+```

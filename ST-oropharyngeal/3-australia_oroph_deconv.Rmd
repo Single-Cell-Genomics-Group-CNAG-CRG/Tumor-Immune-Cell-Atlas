@@ -1,8 +1,18 @@
 ---
-title: "3- Australia oropharyngeal cancer immune deconvolution"
 author: "Marc Elosua-Bayes"
-date: "9/7/2020"
-output: html_document
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+params: 
+    sample_id: "Default!"
+    clust_vr: "Default!"
+title: "`r sprintf('3- Australia oropharyngeal cancer immune deconvolution %s', {params$sample_id})`"
 ---
 
 ```{r setup, include=FALSE}
@@ -17,16 +27,23 @@ In this Rmarkdown I am going to map immune cells from TICA on to the spatial tis
 library(Seurat)
 library(dplyr)
 library(ggplot2)
-library(matchSCore2)
 library(purrr)
 library(SPOTlight)
-source("misc/paths.R")
-source("utils/bin.r")
-source("utils/spatial_plot_spaniel.R")
+source(here::here("misc/paths.R"))
+source(here::here("utils/bin.r"))
 ```
 
 ## Parameters
 ```{r}
+set.seed(1243)
+
+sample_id <- params$sample_id
+# sample_id <- "161429"
+# sample_id <- "161430"
+clust_vr <- params$clust_vr
+# clust_vr <- "lv1_annot"
+# clust_vr <- "lv2_annot"
+
 trn <- "melanoma"
 cl_n <- 100
 hvg <- 3000
@@ -34,7 +51,6 @@ ntop <- NULL
 transf <- "uv"
 method <- "nsNMF"
 min_cont <- 0
-clust_vr <- "new_cell_types"
 
 if (is.null(ntop)) {
   spotlight_id <- sprintf("trn-%s_cln-%s_hvg-%s_ntop-NULL_transf-%s_method-%s_mincont-%s",
@@ -45,93 +61,558 @@ if (is.null(ntop)) {
 }
 ```
 
+Define cell types of interest depending on the annotation level
+```{r}
+if (sample_id == "161430") {
+  ct_interest <- c("Plasma B cells", "T cells regulatory",
+                   "CD8 pre-exhausted", "Macrophages SPP1", "TAMs C1QC",
+                   "CD8 cytotoxic", "Proliferation", "CD4 naive-memory")
+} else if (sample_id == "161429") {
+  ct_interest <- c("B cells", "Plasma B cells", "T cells regulatory",
+                   "CD8 terminally exhausted", "Macrophages SPP1", "TAMs C1QC",
+                   "cDC", "Proliferation")
+}
+```
+
 ## Load data
 We are going to start by loading the data from the previosu script *1-australis_oroph_processing.Rmd*.
 
 ```{r}
-st_ls <- readRDS(file = sprintf("%s/%s/processed_st_ls_oropharyngeal.RDS",
-                       an_oro, robj_dir))
+### Spatial oropharyngeal cancer
+se_obj <- "{an_oro}/{robj_dir}/processed_sp_oropharyngeal_{sample_id}.RDS" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
+```
 
-names(st_ls)
+Subset ICA to just use cells from the melanoma subset since we have a good representation of cells for each cluster from this dataset.
+```{r}
+ica_melanoma2_path <- "{an_breast_10x}/{robj_dir}/ica_melanoma2.rds" %>%
+  glue::glue() %>%
+  here::here()
 
-### Immune reference atlas
-if (trn == "full") {
-  ica_se <- readRDS("data/immune_reference/atlas_250_specific_cell_type.rds")
-} else if (trn == "breast") {
-  ica_se <- readRDS("data/immune_reference/atlas_complete_annotation_breast.rds")
-} else if (trn == "melanoma") {
-  ica_se <- readRDS("data/immune_reference/atlas_complete_annotation_melanoma.rds")
+if (file.exists(ica_melanoma2_path)) {
+  
+  ica_sub <- readRDS(file = ica_melanoma2_path)
+} else {
+  # ica_se <- readRDS("/scratch/devel/pnieto/TIL_Atlas/TICA/output/integrated_renamed_filtered.rds")
+  ica_se <- "data/immune_reference/integrated_clustered_complete.rds" %>%
+    here::here() %>%
+    readRDS(.)
+  ### Immune reference atlas
+  ica_sub <- subset(ica_se, subset = source == "melanoma2")
+  rm(ica_se)
+  
+  saveRDS(object = ica_sub, file = ica_melanoma2_path)
 }
 
-# ica_se <- ica_se[, !ica_se$specific_cell_type %in% c("MAST")]
-
+table(ica_sub@meta.data$lv1_annot)
+table(ica_sub@meta.data$lv2_annot)
 ```
 
 Create a name/color dataframe
 ```{r}
-source("misc/col_df_scrpt.R")
+# source(here::here("misc/col_df_scrpt.R"))
+# source(here::here("misc/col_df_scrpt2.R"))
+
+col_df <- readRDS(here::here("misc/col_df.rds"))
 ```
 
 Change variable names to remove non-standard characters
 ```{r}
-ica_se[["specific_cell_type_mod"]] <- gsub(pattern = "[[:punct:]]|[[:blank:]]", ".",
-                               x = as.character(ica_se@meta.data[, clust_vr]), 
-                               perl = TRUE)
-```
+ica_sub[["specific_cell_type_mod"]] <- stringr::str_replace_all(
+  string = as.character(ica_sub@meta.data[, clust_vr]),
+  pattern = "[[:punct:]]|[[:blank:]]",
+  replacement = ".")
 
-Next we are going to process the seurat object. Since we are working with data from multiple sources and we need to have the data normalized using unit variance we will run SCTransform. We regress the effect of the source while scaling but not centering the data. This way we remove the source batch, perform unit variance scaling and keep it positive by not centering it around 0.
-```{r}
-Seurat::Idents(ica_se) <- ica_se@meta.data[, "specific_cell_type_mod"]
+prolif_vec <- c("T.cells.proliferative", "Macrophages.and.monocytes.proliferative",
+                "B.cells.proliferative", "Macrophages.proliferative")
 
-if (trn == "full") {
-  ica_se <- readRDS(file = sprintf("%s/%s/ica_se_full_processed.RDS",
-                       an_breast_10x, robj_dir))
+ica_sub[["specific_cell_type_mod"]] <- 
+  dplyr::if_else(ica_sub@meta.data[, "specific_cell_type_mod"] %in% prolif_vec,
+                 "Proliferation", ica_sub@meta.data[, "specific_cell_type_mod"])
 
-} else if (trn == "breast") {
-  ica_se <- readRDS(file = sprintf("%s/%s/ica_se_breast_processed.RDS",
-                         an_breast_10x, robj_dir))
-} else if (trn == "melanoma") {
-  ica_se <- readRDS(file = "data/immune_reference/ica_se_melanoma_processed.RDS")
-
-}
+table(ica_sub@meta.data$specific_cell_type_mod)
 ```
 
 Immune cell marker genes
 ```{r eval = FALSE}
-# ica_se <- Seurat::SCTransform(object = ica_se, assay = "RNA")
-ica_markers <- Seurat::FindAllMarkers(object = ica_se,
+ica_sub <- Seurat::SCTransform(object = ica_sub, assay = "RNA")
+
+Seurat::Idents(ica_sub) <- as.character(ica_sub@meta.data[, "specific_cell_type_mod"])
+
+ica_markers <- Seurat::FindAllMarkers(object = ica_sub,
                        assay = "SCT",
                        slot = "data",
                        only.pos = TRUE,
                        logfc.threshold = 0,
                        min.pct = 0,
-                       max.cells.per.ident = 250)
+                       max.cells.per.ident = 500)
 
-if (trn == "full") {
-  saveRDS(object = ica_markers,
-        file = "data/immune_reference/ica_markers_all.RDS")
-} else if (trn == "breast") {
-  saveRDS(object = ica_markers,
-        file = "data/immune_reference/ica_markers_breast.RDS")
-} else if (trn == "melanoma") {
-  saveRDS(object = ica_markers,
-        file = "data/immune_reference/ica_markers_melanoma.RDS")
-}
+
+"data/immune_reference/ica_markers_melanoma2_{clust_vr}.rds" %>%
+  glue::glue()%>%
+  here::here( ) %>%
+  saveRDS(
+    object = ica_markers,
+    file = .)
 ```
 
-Load previously computed marker genes
+Load marker genes per cluster
 ```{r}
-if (trn == "full") {
-  ica_markers <- readRDS(file = "data/immune_reference/ica_markers_all.RDS")
-} else if (trn == "breast") {
-  ica_markers <- readRDS(file = "data/immune_reference/ica_markers_breast.RDS")
-} else if (trn == "melanoma") {
-  ica_markers <- readRDS(file = "data/immune_reference/ica_markers_melanoma.RDS")
-}
+ica_markers <- "data/immune_reference/ica_markers_melanoma2_{clust_vr}.rds" %>%
+  glue::glue()%>%
+  here::here() %>%
+  readRDS(file = .)
+
+ica_markers <- ica_markers %>% dplyr::filter(cluster != "Mast.cells")
+```
+
+Look at the proliferation markers
+```{r}
+ica_markers %>%
+  dplyr::filter(cluster == "Prolifeºration") %>%
+  head(20)
 ```
 
 ## Deconvolution
-Since we are running this for all the slides please refer to the script **spotlight_deconv_oroph_job.R** which was used to send each slide's deconvolution to the cluster in parallel.
+```{r message = FALSE}
+# Remove Mast cells
+ica_sub <- subset(ica_sub, subset = specific_cell_type_mod != "Mast.cells")
+# Create Seurat object with filtered gene matrix after removing Mast cells
+ica_sub <- Seurat::CreateSeuratObject(
+  counts = ica_sub@assays$RNA@counts[
+    sparseMatrixStats::rowSums2(ica_sub@assays$RNA@counts) != 0, ],
+  meta.data = ica_sub@meta.data)
+
+# Remove empty spatial genes
+# keep_genes <- rowSums(as.matrix(se_obj@assays$Spatial@counts)) != 0
+# table(rowSums(ica_sub@assays$RNA@counts) != 0)
+
+# Run deconvolution
+decon_mtrx_ls <- SPOTlight::spotlight_deconvolution(
+  se_sc = ica_sub,
+  counts_spatial = se_obj@assays$Spatial@counts,
+  clust_vr = "specific_cell_type_mod",
+  cluster_markers = ica_markers,
+  cl_n = cl_n,
+  hvg = hvg,
+  ntop = ntop,
+  transf = transf,
+  method = method,
+  min_cont = min_cont,
+  assay = "RNA",
+  slot = "counts")
+
+# saveRDS(object = decon_mtrx_ls,
+#         file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s_reg.rds",
+#                        an_oro, robj_dir, spotlight_id))
+# 
+# saveRDS(object = decon_mtrx_ls,
+#         file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s_latent.rds",
+#                        an_oro, robj_dir, spotlight_id))
+
+"{an_oro}/{robj_dir}/decon_mtrx_atlas_{sample_id}_{spotlight_id}_{clust_vr}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  saveRDS(object = decon_mtrx_ls, file = .)
+```
+
+Add deconvolution matrix to Seurat object metadata
+```{r}
+decon_mtrx_ls <- "{an_oro}/{robj_dir}/decon_mtrx_atlas_{sample_id}_{spotlight_id}_{clust_vr}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
+
+# decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s.rds",
+#                                         an_oro, robj_dir, spotlight_id))
+# decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_pdac_atlas.rds", an_oro, robj_dir))
+# decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s_reg.rds",
+#                        an_oro, robj_dir, spotlight_id))
+# 
+# decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_breast_cancer_10x_atlas_%s_latent.rds",
+#                        an_oro, robj_dir, spotlight_id))
+
+decon_mtrx <- decon_mtrx_ls[[2]]
+decon_mtrx <- decon_mtrx[, colnames(decon_mtrx) != "res_ss"]
+
+# Set as 0 cell types predicted to be under 3 % of the spot
+decon_mtrx[decon_mtrx < 0.03] <- 0
+```
+
+Change names to original ones and reorder according to Paula
+```{r}
+new_colnames <- data.frame(ct_name = colnames(decon_mtrx), stringsAsFactors = FALSE) %>%
+  dplyr::left_join(col_df, by = "ct_name") %>%
+  dplyr::pull(plt_name)
+
+colnames(decon_mtrx) <- new_colnames
+```
+
+Add deconvolution matrix to Seurat object metadata
+```{r}
+se_obj@meta.data <- cbind(se_obj@meta.data, round(decon_mtrx, 3))
+```
+
+### Visualization
+Before we start we take a look at the topic profiles
+```{r}
+# Extract coefficient matrix
+h <- NMF::coef(decon_mtrx_ls[[1]][[1]])
+
+# Extract coefficient labels
+train_labs <- data.frame(ct_name = decon_mtrx_ls[[1]][[2]]) %>%
+  dplyr::left_join(col_df, by = "ct_name") %>%
+  dplyr::pull(plt_name)
+
+# rownames(h) <- paste("Topic", 1:nrow(h), sep = " ")
+profile_plt <- SPOTlight::dot_plot_profiles_fun(
+  h = h,
+  train_cell_clust = train_labs)
+
+profile_plt[[1]]
+
+"{an_oro}/{plt_dir}/all_ct_profiles_{spotlight_id}_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = profile_plt[[1]],
+    base_height = 30,
+    base_width = 30)
+
+h_df <- data.frame(t(h))
+
+# Fix column names after converting to dataframe
+colnames(h_df) <- gsub(".", " ", colnames(h_df), fixed = TRUE)
+
+# Get proportions for each row
+h_ds <- round(h_df/rowSums(h_df), 4)
+h_ds[, "clust_vr"] <- train_labs
+
+
+ct_topic_profiles <- h_ds %>%
+  dplyr::group_by(clust_vr) %>%
+  dplyr::summarise_all(list(median)) %>%
+  tibble::remove_rownames(.) %>%
+  tibble::column_to_rownames("clust_vr")
+
+ct_topic_profiles <- ct_topic_profiles / rowSums(ct_topic_profiles)
+# In case a row is all 0
+ct_topic_profiles[is.na(ct_topic_profiles)] <- 0
+
+cell_type_plt <- round(ct_topic_profiles, 2) %>%
+  tibble::rownames_to_column('Cell type') %>%
+  tidyr::pivot_longer(cols = -`Cell type`, names_to = "Topics") %>%
+  dplyr::mutate(
+    value_txt = dplyr::if_else(value > 0.1, round(value, 2), NULL),
+    Topics = factor(x = Topics,
+                    levels = stringr::str_sort(colnames(ct_topic_profiles),
+                                               numeric = TRUE)),
+    topics_num = stringr::str_replace_all(
+      string = Topics,
+      pattern =  "X",
+      replacement = ""),
+    topics_num = factor(topics_num, levels = as.character(1:length(unique(ct_topic_profiles))))
+    
+  ) %>%
+  ggplot2::ggplot(ggplot2::aes(x = `Cell type`, y = topics_num)) +
+  ggplot2::geom_point(ggplot2::aes(size = value, colour = value)) +
+  ggplot2::scale_color_continuous(low = "grey", high = "#59b371") +
+  ggplot2::theme_classic() +
+  ggplot2::labs(title = "NMF: Topic profiles by cell type") +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(hjust = 0.5, size = 20),
+    axis.text.x = ggplot2::element_text(angle = 90, vjust = 0.5),
+    axis.text = ggplot2::element_text(size = 15)) +
+  ggplot2::scale_size(range = c(0, 10)) +
+  ggplot2::guides(colour = ggplot2::guide_legend("Proportion"),
+                  size = ggplot2::guide_legend("Proportion")) +
+  ggplot2::labs(
+    title = glue::glue("NMF: Topic profiles by cell type"),
+    x = "",
+    y = "Topics") +
+  ggplot2::scale_x_discrete(
+    limits = unique(stringr::str_wrap(train_labs, width = 30))) +
+  # ggplot2::scale_y_discrete(breaks = c(1:length(unique(train_labs))))
+  ggplot2::theme(
+    axis.text = ggplot2::element_text(size = 22),
+    axis.text.x = ggplot2::element_text(hjust = 1, vjust = 0.5),
+    legend.title = ggplot2::element_text(size = 20, face = "bold"),
+    legend.text = ggplot2::element_text(size = 18),
+    axis.title.y = ggplot2::element_text(size = 26),
+    # plot.title = element_blank()
+    plot.title = ggplot2::element_text(size = 30))
+
+cell_type_plt
+
+"{an_oro}/{plt_dir}/ct_profiles_{spotlight_id}_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = cell_type_plt,
+    base_height = 10,
+    base_width = 10)
+```
+
+Lastly we can take a look at which genes are the most important for each topic and get an insight into which genes are driving them.
+```{r}
+basis_spotlight <- data.frame(NMF::basis(decon_mtrx_ls[[1]][[1]]))
+
+colnames(basis_spotlight) <- unique(stringr::str_wrap(decon_mtrx_ls[[1]][[2]], width = 30))
+
+basis_spotlight %>%
+  round(., 5) %>% 
+  DT::datatable(., filter = "top")
+```
+
+We will start by looking at the location of each cell type
+```{r}
+# https://stackoverflow.com/questions/38722202/how-do-i-change-the-number-of-decimal-places-on-axis-labels-in-ggplot2
+# Our transformation function to ensure 2 decimals in the legend
+scaleFUN <- function(x) sprintf("%.2f", x)
+
+ct_all <- colnames(decon_mtrx)
+ct_plt_ls <- lapply(ct_all, function(ct) {
+  tmp_plt <- Seurat::SpatialFeaturePlot(object = se_obj,
+                             features = ct,
+                             alpha = c(0, 1))
+  
+  if (sum(se_obj@meta.data[, ct]) == 0) {
+    tmp_plt <- tmp_plt + ggplot2::scale_alpha(range = c(0,0))
+  } else {
+    tmp_plt <- tmp_plt + ggplot2::scale_alpha(range = c(0, 1))
+  }
+  
+  tmp_plt <- tmp_plt +
+    ggplot2::theme(
+      legend.title = ggplot2::element_blank()
+      ) +
+    ggplot2::labs(title = ct) +
+    ggplot2::scale_fill_gradientn(
+      colors = grDevices::heat.colors(10, rev = TRUE),
+      # Same number of breaks for all plots
+      breaks = seq(min(se_obj@meta.data[, ct]),
+                   max(se_obj@meta.data[, ct]),
+                   length.out = 4),
+      # 2 decimals in the legend
+      labels = scaleFUN
+      # limits = c(0, 1)
+      )
+return(tmp_plt)
+})
+
+ct_grid <- cowplot::plot_grid(
+  plotlist = ct_plt_ls,
+  axis = "trbl",
+  align = "hv",
+  nrow = 5,
+  ncol = 5)
+
+"{an_oro}/{plt_dir}/{sample_id}_immune_reference_arrangement_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = ct_grid,
+    base_height = 25,
+    base_width = 25)
+```
+
+Next we will only plot the location of the cell types of interest for the main plot
+```{r}
+# i <- unique(se_obj$slice)[1]
+# ct <- cell_types[[1]]
+ct_plt_ls <- lapply(ct_interest, function(ct) {
+  print(ct)
+  tmp_plt <- Seurat::SpatialPlot(
+    object = se_obj,
+    features = ct,
+    alpha = c(0, 1),
+    # Remove background image
+    image.alpha = 0,
+    crop = FALSE,
+    pt.size.factor = 1
+    ) +
+    theme(
+      legend.title = ggplot2::element_blank(),
+      legend.key.size = unit(1, 'cm'))
+  
+  if (sum(se_obj@meta.data[, ct]) == 0) {
+    tmp_plt <- tmp_plt + ggplot2::scale_alpha(range = c(0,0))
+  } else {
+    tmp_plt <- tmp_plt +
+    ggplot2::scale_fill_gradientn(
+      colors = grDevices::heat.colors(10, rev = TRUE),
+      # Same number of breaks for all plots with 2 decimals
+      breaks = round(seq(min(se_obj@meta.data[, ct]),
+                   max(se_obj@meta.data[, ct]),
+                   length.out = 3), 2),
+      # 2 decimals in the legend
+      labels = function(x) sapply(x, FUN = function(i) format(x = i, nsmall = 0))
+      # labels = scaleFUN
+      # limits = c(0, 1)
+      )
+  }
+  
+  tmp_plt <- tmp_plt +
+    ggplot2::labs(title = ct) +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(hjust = 0.5, size = 30, face = "bold"),
+      legend.title = ggplot2::element_blank(),
+      legend.text = ggplot2::element_text(size = 20))
+
+return(tmp_plt)
+})
+
+interest_grid <- cowplot::plot_grid(plotlist = ct_plt_ls,
+                   axis = "trbl",
+                   align = "hv",
+                   nrow = 4,
+                   ncol = 2)
+
+"{an_oro}/{plt_dir}/{sample_id}_immune_reference_arrangement_interest_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = interest_grid,
+    base_height = 25,
+    base_width = 15)
+```
+
+Then we will plot the spatial-scatterpie for both slices to get a gist of what is going on
+```{r eval = FALSE}
+spsct_plt1 <- SPOTlight::spatial_scatterpie(
+  se_obj = se_obj,
+  cell_types_all = cell_types,
+  img_path = here::here("data/breast_visium/section_1/spatial/tissue_lowres_image.pdf"),
+  pie_scale = 0.4,
+  slice = sample_id) +
+    ggplot2::scale_fill_manual(
+    values = col_df[col_df$plt_name %in% cell_types, "col_df"],
+    breaks = cell_types) +
+    ggplot2::guides(fill = ggplot2::guide_legend(ncol = 1))
+
+"{an_oro}/{plt_dir}/{sample_id}_spatial_scatterpie_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = spsct_plt1,
+    base_width = 12,
+    base_height = 9)
+```
+
+We will also plot the scatterpie without the slice image underneath
+```{r}
+sct_plt1 <- SPOTlight::scatterpie_plot(se_obj = se_obj,
+                                       cell_types_all = ct_all,
+                                       pie_scale = 0.7,
+                                       slice = sample_id) +
+    ggplot2::scale_fill_manual(
+      values = col_df[col_df$plt_name %in% ct_all, "col_df"],
+      breaks = colnames(decon_mtrx)) +
+    ggplot2::coord_fixed(ratio = 1) +
+    ggplot2::guides(fill = ggplot2::guide_legend(ncol = 1))
+
+"{an_oro}/{plt_dir}/{sample_id}_scatterpie_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = sct_plt1,
+    base_width = 12,
+    base_height = 9)
+```
+
+We can also take a loot at the spatial scatterpie by looking at cell types which are not present throughout the entire tissue.
+```{r}
+# Subset cell types from metadata
+metadata_subset <- se_obj@meta.data[, ct_all]
+
+# Create masks
+keep_0.75 <- colSums(se_obj@meta.data[, ct_all] > 0) < 0.75 * ncol(se_obj)
+keep_g0 <- colSums(se_obj@meta.data[, ct_all] > 0) > 0
+
+# Select cell types fullfiling the conditions
+ct_var <- c(colnames(decon_mtrx)[keep_0.75 & keep_g0])
+
+# Get color order
+col_vec <- data.frame(plt_name = ct_var) %>%
+  dplyr::left_join(col_df, by = "plt_name") %>%
+  dplyr::pull(col_df)
+
+sct_plt_int <- SPOTlight::scatterpie_plot(
+  se_obj = se_obj,
+  cell_types_all = ct_var,
+  pie_scale = 0.4) +
+  ggplot2::scale_fill_manual(
+    values = col_vec,
+    breaks = ct_var) +
+  ggplot2::labs(fill = "") +
+  ggplot2::coord_fixed(ratio = 1) +
+  ggplot2::theme(legend.position = "top",
+                 legend.text = ggplot2::element_text(size = 12)) +
+  ggplot2::guides(fill = ggplot2::guide_legend(nrow = 3))
+
+"{an_oro}/{plt_dir}/{sample_id}_scatterpie_interest_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = sct_plt_int,
+    base_width = 12,
+    base_height = 9)
+```
+
+### Gene - Cell correlation
+Check assumptions
+```{r eval = FALSE}
+
+lapply(c("Regulatory T cells", "Cytotoxic CD8 T cells"), function(ct) {
+  # Shapiro-Wilk normality test for mpg
+  print(shapiro.test(se_obj@meta.data[, ct]))
+  ggpubr::ggqqplot(se_obj@meta.data[, ct])
+
+})
+
+lapply(c("ENTPD1", "NT5E", "TGFB1"), function(gene) {
+  # Shapiro-Wilk normality test for mpg
+  print(shapiro.test(se_obj@assays$SCT@data[gene, ]))
+  ggpubr::ggqqplot(se_obj@assays$SCT@data[gene, ])
+
+})
+```
+
+Next we want to check if the fibrotic marker TGFB1 with Treg and Cytotoxic CD8 T cells"
+```{r eval = FALSE}
+library(ggpubr)
+
+metadata <- dplyr::bind_cols(
+  se_obj@meta.data,
+  data.frame(t(se_obj@assays$SCT@data[c("ENTPD1", "NT5E", "TGFB1"), ])))
+
+cor_plts <- lapply(c("Regulatory T cells", "Cytotoxic CD8 T cells"), function(ct) {
+  tmp_ls <- lapply(c("ENTPD1", "NT5E", "TGFB1"), function(gene) {
+    
+    tmp_plt <- ggpubr::ggscatter(data = metadata,
+                      x = gene,
+                      y = ct,
+                      add = "reg.line") +
+       ggpubr::stat_cor(method = "pearson")
+    return(tmp_plt)
+    })
+  cowplot::plot_grid(plotlist = tmp_ls, ncol = 1)
+  })
+  
+tmp_arr <- cowplot::plot_grid(plotlist = cor_plts,
+                              nrow = 1,
+                              ncol = 2)
+tmp_arr
+```
 
 ## Session Info
 ```{r}

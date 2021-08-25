@@ -1,35 +1,52 @@
 ---
-title: "4-10x breast stratification"
 author: "Marc Elosua-Bayes"
-date: "6/18/2020"
-output: html_document
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    df_print: paged
 editor_options: 
   chunk_output_type: console
+params: 
+    sample_id: "Default!"
+    clust_vr: "Default!"
+title: "`r sprintf('4-10x breast stratification %s', {params$sample_id})`"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, out.width = "100%", fig.align='center', 
+                      message = FALSE, warning = FALSE)
+options(width = 1200)
 ```
 
 ## Introduction
 In this script we are going to stratify the tissue in different ways to assess different immune infiltrations. The pathologist's  annotation of the tissue is the following>
 
-![10X breast annotated](../../data/breast_visium/breast_cancer_annotated.png)
-
 ```{r}
 library(Seurat)
-library(Spaniel)
 library(tidyverse)
-library(Matrix)
+library(Matrix) 
 library(SPOTlight)
-library(svglite)
-source("utils/bin.r")
-source("utils/spatial_plot_spaniel.R")
+# library(svglite)
+library(corrplot)
+library(ggcorrplot)
+
+source(here::here("utils/bin.r"))
 ```
 
 ## Parameters
 ```{r}
-# trn <- "breast"
+set.seed(1243)
+
+sample_id <- params$sample_id
+# sample_id <- "breast_1"
+# sample_id <- "breast_2"
+clust_vr <- params$clust_vr
+# clust_vr <- "lv2_annot"
+# clust_vr <- "lv1_annot"
+
 trn <- "melanoma"
 cl_n <- 100
 hvg <- 3000
@@ -37,48 +54,72 @@ ntop <- NULL
 transf <- "uv"
 method <- "nsNMF"
 min_cont <- 0
-clust_vr <- "new_cell_types"
 
 if (is.null(ntop)) {
-  spotlight_id <- sprintf("trn-%s_cln-%s_hvg-%s_ntop-NULL_transf-%s_method-%s_mincont-%s",
-                          trn, cl_n, hvg, transf, method, min_cont)
+  spotlight_id <- glue::glue("trn-{trn}_cln-{cl_n}_hvg-{hvg}_ntop-NULL_transf-{transf}_method-{method}_mincont-{min_cont}")
 } else {
-  spotlight_id <- sprintf("trn-%s_cln-%s_hvg-%s_ntop-%s_transf-%s_method-%s_mincont-%s",
-                          trn, cl_n, hvg, ntop, transf, method, min_cont)
+  spotlight_id <- glue::glue("trn-{trn}_cln-{cl_n}_hvg-{hvg}_ntop-{ntop}_transf-{transf}_method-{method}_mincont-{min_cont}")
 }
+```
 
-ct_interest <- c("Plasma B cells", "Regulatory T cells", "T helper cells",
-                 "Proliferative T cells", "Pre-exhausted CD8 T cells", "Cytotoxic CD8 T cells",
-                 "NK", "SPP1 TAMs", "M2 TAMs")
+Define cell types of interest depending on the annotation level
+```{r}
+if (clust_vr == "lv2_annot") {
+  ct_interest <- c("Plasma.B.cells", "T.regs", "T.helper.Th17",
+                 "Proliferation", "CD8.exhausted",
+                 "CD8.cytotoxic", "NK", "Macrophages.SPP1", "TAMs.C1QC")
+} else if (clust_vr == "lv1_annot") {
+  ct_interest <- c("Plasma B cells", "T cells regulatory", "T helper cells",
+                 "Proliferation", "CD8 pre-exhausted",
+                 "CD8 terminally exhausted", "NK", "Macrophages SPP1", "TAMs C1QC")
+}
 ```
 
 ## Paths
 ```{r}
-source("misc/paths.R")
-dir.create(path = sprintf("%s/%s", an_breast_10x, robj_dir),
-           showWarnings = FALSE,
-           recursive = TRUE)
+source(here::here("misc/paths.R"))
 
-dir.create(path = sprintf("%s/%s", an_breast_10x, plt_dir),
-           showWarnings = FALSE,
-           recursive = TRUE)
+"{an_breast_10x}/{robj_dir}" %>%
+  glue::glue() %>%
+  here::here() %>%
+  dir.create(
+    path = ,
+    showWarnings = FALSE,
+    recursive = TRUE)
+
+"{an_breast_10x}/{plt_dir}" %>%
+  glue::glue() %>%
+  here::here() %>%
+  dir.create(
+    path = ,
+    showWarnings = FALSE,
+    recursive = TRUE)
 ```
 
 ## Load data
 Breast cancer data loaded here comes from 1-10x_breast_QC.Rmd
 ```{r}
 ### Breast cancer
-breast_merged <- readRDS(file = sprintf("%s/%s/breast_merged_processed.RDS",
-                                        an_breast_10x, robj_dir))
+### Spatial breast cancer
+se_obj <- "{an_breast_10x}/{robj_dir}/qc_se_{sample_id}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
 
 ### Deconvolution
-decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_TICA_breast_%s.RDS",
-                       an_breast_10x, robj_dir, spotlight_id))
+# decon_mtrx_ls <- readRDS(file = sprintf("%s/%s/decon_mtrx_TICA_breast_%s.RDS",
+#                        an_breast_10x, robj_dir, spotlight_id))
+decon_mtrx_ls <- "{an_breast_10x}/{robj_dir}/decon_mtrx_breast_cancer_10x_atlas_{sample_id}_{spotlight_id}_{clust_vr}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
 ```
 
 Create a name/color dataframe
 ```{r}
-source("misc/col_df_scrpt.R")
+# source(here::here("misc/col_df_scrpt.R"))
+# source(here::here("misc/col_df_scrpt2.R"))
+col_df <- readRDS(here::here("misc/col_df.rds"))
 ```
 
 Change names to original ones and reorder according to Paula
@@ -86,17 +127,19 @@ Change names to original ones and reorder according to Paula
 decon_mtrx <- decon_mtrx_ls[[2]]
 decon_mtrx <- decon_mtrx[, colnames(decon_mtrx) != "res_ss"]
 
-# Set as 0 cell types predicted to be under 0.1 % of the spot
-decon_mtrx[decon_mtrx < 0.001] <- 0
+# Set as 0 cell types predicted to be under 3 % of the spot
+decon_mtrx[decon_mtrx < 0.03] <- 0
 
 new_colnames <- data.frame(ct_name = colnames(decon_mtrx), stringsAsFactors = FALSE) %>%
   dplyr::left_join(col_df, by = "ct_name") %>%
   dplyr::pull(plt_name)
 
 colnames(decon_mtrx) <- new_colnames
+```
 
-paula_order[! paula_order %in% colnames(decon_mtrx)]
-decon_mtrx <- decon_mtrx[, paula_order]
+Add deconvolution matrix to Seurat object metadata
+```{r}
+se_obj@meta.data <- cbind(se_obj@meta.data, round(decon_mtrx, 3))
 ```
 
 Convert to dataframe
@@ -106,9 +149,25 @@ colnames(decon_df) <- colnames(decon_mtrx)
 decon_df <- decon_df[, which(colnames(decon_df) != "res_ss")]
 ```
 
+Set paula order sub for subsequent use
+```{r}
+ct <- colnames(decon_df)[!colnames(decon_df) %in% "res_ss"]
+```
+
+## Clustering
+```{r}
+se_obj <- Seurat::RunPCA(se_obj,
+                                verbose = FALSE) %>%
+  Seurat::FindNeighbors(., dims = 1:30, verbose = FALSE) %>%
+  Seurat::FindClusters(.,
+                       verbose = FALSE,
+                       resolution = c(0.075, 0.1, 0.25, 0.5, 0.8, 1)) %>%
+  Seurat::RunUMAP(., dims = 1:30, verbose = FALSE)
+```
+
 ## Stratify tissue
 ```{r}
-esr_plt <- Seurat::SpatialFeaturePlot(object = breast_merged,
+esr_plt <- Seurat::SpatialFeaturePlot(object = se_obj,
                            features = c("ESR1"), # Estrogen receptor
                            alpha = c(0, 1)) +
   labs(title = "Breast ESR1") +
@@ -116,45 +175,54 @@ esr_plt <- Seurat::SpatialFeaturePlot(object = breast_merged,
                                   hjust = 0.5,
                                   face = "bold"))
 
-pgr_plt <- Seurat::SpatialFeaturePlot(object = breast_merged,
+pgr_plt <- Seurat::SpatialFeaturePlot(object = se_obj,
                            features = c("PGR"), # Progesterone receptor,
                            alpha = c(0, 1))
 
-her_plt <- Seurat::SpatialFeaturePlot(object = breast_merged,
+her_plt <- Seurat::SpatialFeaturePlot(object = se_obj,
                            features = c("ERBB2"), # HER2 positive
                            alpha = c(0, 1))
-ki67_plt <- Seurat::SpatialFeaturePlot(object = breast_merged,
+ki67_plt <- Seurat::SpatialFeaturePlot(object = se_obj,
                            features = c("MKI67"), # KI67 proliferation
                            alpha = c(0, 1))
 
-dim_plt <- Seurat::SpatialDimPlot(object = breast_merged,
+if (sample_id == "breast_1") {
+  dim_plt <- Seurat::SpatialDimPlot(object = se_obj,
                        group.by = "SCT_snn_res.0.1")
+} else if (sample_id == "breast_2") {
+  dim_plt <- Seurat::SpatialDimPlot(object = se_obj,
+                       group.by = "SCT_snn_res.0.25")
+}
+
+esr_plt + pgr_plt + her_plt + ki67_plt + dim_plt
 ```
 
 #### Markers
 TGFB1 is a known fibrotic marker.
 ```{r}
-sp_cl <- Seurat::SpatialDimPlot(object = breast_merged,
+sp_cl <- Seurat::SpatialDimPlot(object = se_obj,
                                 group.by = "SCT_snn_res.0.1")
 
-sp_tmp <- Seurat::SpatialFeaturePlot(object = breast_merged,
+sp_tmp <- Seurat::SpatialFeaturePlot(object = se_obj,
                            features = "TGFB1",
                            alpha = c(0, 1))
 
-lapply(1:2, function(i) {
-  vln_tmp <- Seurat::VlnPlot(object = breast_merged[, breast_merged$slice == sprintf("breast_%s", i)],
-                           features = "TGFB1",
-                           group.by = "SCT_snn_res.0.1",
-                           assay = "SCT",
-                           slot = "data")
+vln_tmp <- Seurat::VlnPlot(object = se_obj,
+                         features = "TGFB1",
+                         group.by = "SCT_snn_res.0.1",
+                         assay = "SCT",
+                         slot = "data")
 
-  tmp <- sp_cl[[i]] + sp_tmp[[i]] + vln_tmp
-  cowplot::save_plot(filename = sprintf("%s/%s/fibrotic_marker_breast-%s.pdf",
-                                        an_breast_10x, plt_dir, i),
-                     plot = tmp,
-                     base_height = 5,
-                     base_width = 15)
-})
+tmp <- sp_cl + sp_tmp + vln_tmp
+tmp
+"{an_breast_10x}/{plt_dir}/fibrotic_marker_{sample_id}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = ,
+    plot = tmp,
+    base_height = 5,
+    base_width = 15)
 ```
 
 From here we can determine some correspondance between Estrogen receptor and HER2+ expression. So with Cluster resolution at 0.1 we observe the following correspondance:
@@ -164,92 +232,97 @@ From here we can determine some correspondance between Estrogen receptor and HER
 
 We are now interested in if there is different immune infiltrations between those regions and the rest. To do se we'll stratify the tissue into those categories.
 ```{r}
-breast_merged[["ESR1"]] <- dplyr::if_else(breast_merged$SCT_snn_res.0.1 %in% c(2,3), "ESR1+", 
-                                          dplyr::if_else(breast_merged$SCT_snn_res.0.1 %in% c(0), "Fibrotic", "ESR1-"))
+if (sample_id == "breast_1") {
+  se_obj[["HER2_ESR1"]] <- factor(dplyr::case_when(
+                        se_obj$SCT_snn_res.0.1 %in% c(3) ~ "HER2+/ESR1+",
+                        se_obj$SCT_snn_res.0.1 %in% c(2) ~ "HER2-/ESR1+",
+                        se_obj$SCT_snn_res.0.1 %in% c(4) ~ "HER2+/ESR1-",
+                        se_obj$SCT_snn_res.0.1 %in% c(0) ~ "Fibrotic",
+                        TRUE ~ "HER2-/ESR1-"), 
+                        levels = c("Fibrotic", "HER2+/ESR1+",
+                                   "HER2+/ESR1-", "HER2-/ESR1+",
+                                   "HER2-/ESR1-"))
 
-breast_merged[["HER2"]] <- dplyr::if_else(breast_merged$SCT_snn_res.0.1 %in% c(3,4), "HER2+",
-                                          dplyr::if_else(breast_merged$SCT_snn_res.0.1 %in% c(0), "Fibrotic", "HER2-"))
-
-breast_merged[["HER2_ESR1"]] <- factor(dplyr::case_when(
-                      breast_merged$SCT_snn_res.0.1 %in% c(3) ~ "HER2+/ESR1+",
-                      breast_merged$SCT_snn_res.0.1 %in% c(2) ~ "HER2-/ESR1+",
-                      breast_merged$SCT_snn_res.0.1 %in% c(4) ~ "HER2+/ESR1-",
-                      breast_merged$SCT_snn_res.0.1 %in% c(0) ~ "Fibrotic",
-                      TRUE ~ "HER2-/ESR1-"), 
-                      levels = c("Fibrotic", "HER2+/ESR1+",
-                                 "HER2+/ESR1-", "HER2-/ESR1+",
-                                 "HER2-/ESR1-"))
-
+} else if (sample_id == "breast_2") {
+  se_obj[["HER2_ESR1"]] <- factor(dplyr::case_when(
+                        se_obj$SCT_snn_res.0.25 %in% c(4) ~ "HER2+/ESR1+",
+                        se_obj$SCT_snn_res.0.25 %in% c(3) ~ "HER2-/ESR1+",
+                        se_obj$SCT_snn_res.0.25 %in% c(5) ~ "HER2+/ESR1-",
+                        se_obj$SCT_snn_res.0.25 %in% c(0, 1) ~ "Fibrotic",
+                        TRUE ~ "HER2-/ESR1-"), 
+                        levels = c("Fibrotic", "HER2+/ESR1+",
+                                   "HER2+/ESR1-", "HER2-/ESR1+",
+                                   "HER2-/ESR1-"))
+}
 ```
 
 ```{r}
-strat_plt <- Seurat::SpatialDimPlot(object = breast_merged,
+strat_plt <- Seurat::SpatialDimPlot(object = se_obj,
                        group.by = "HER2_ESR1")
-lapply(1:2, function(i) {
-  tmp_plt <- cowplot::plot_grid(plotlist = list(esr_plt[[i]] +
-                                                  labs(title = "ESR1") +
-                                                  theme(plot.title = element_text(size = 20,
-                                                                                  hjust = 0.5,
-                                                                                  face = "bold"),
-                                                        legend.title = element_blank()),
-                                                her_plt[[i]] +
-                                                  labs(title = "ERBB2") +
-                                                  theme(plot.title = element_text(size = 20,
-                                                                                  hjust = 0.5,
-                                                                                  face = "bold"),
-                                                        legend.title = element_blank()),
-                                                # pgr_plt[[i]] +
-                                                #   labs(title = "PGR") +
-                                                #   theme(plot.title = element_text(size = 20,
-                                                #                                   hjust = 0.5,
-                                                #                                   face = "bold"),
-                                                #         legend.title = element_blank()),
-                                                strat_plt[[i]] +
-                                                  labs(title = "") +
-                                                  scale_fill_brewer(palette = "Set1") +
-                                                  theme(
-                                                    # plot.title = element_text(size = 20,
-                                                    #                           hjust = 0.5,
-                                                    #                           face = "bold"),
-                                                    legend.position="top",
-                                                    legend.title = element_blank()) +
-                                                  guides(fill = guide_legend(override.aes = list(size = 5),
-                                                                             nrow = 2))
-                                                        ),
-                                nrow = 1,
-                                align = "hv",
-                                axis = "trbl")
-  
-  # cowplot::save_plot(filename = sprintf("%s/%s/breast_gene_expression_%s.pdf",
-  #                                       an_breast_10x, plt_dir, i),
-  #                    plot = tmp_plt,
-  #                    base_height = 9,
-  #                    base_width = 15)
-  
-  # cowplot::save_plot(filename = sprintf("%s/%s/breast_gene_expression_%s.svg",
-  #                                       an_breast_10x, plt_dir, i),
-  #                    plot = tmp_plt,
-  #                    base_height = 9,
-  #                    base_width = 15)
-  cowplot::save_plot(filename = sprintf("~/Downloads/breast_gene_expression_%s.svg",
-                                        i),
-                     plot = tmp_plt,
-                     base_height = 9,
-                     base_width = 15)
-})
+
+tmp_plt <- cowplot::plot_grid(plotlist = list(esr_plt +
+                                                labs(title = "ESR1") +
+                                                theme(plot.title = element_text(size = 20,
+                                                                                hjust = 0.5,
+                                                                                face = "bold"),
+                                                      legend.title = element_blank()),
+                                              her_plt +
+                                                labs(title = "ERBB2") +
+                                                theme(plot.title = element_text(size = 20,
+                                                                                hjust = 0.5,
+                                                                                face = "bold"),
+                                                      legend.title = element_blank()),
+                                              # pgr_plt[[i]] +
+                                              #   labs(title = "PGR") +
+                                              #   theme(plot.title = element_text(size = 20,
+                                              #                                   hjust = 0.5,
+                                              #                                   face = "bold"),
+                                              #         legend.title = element_blank()),
+                                              strat_plt +
+                                                labs(title = "") +
+                                                scale_fill_brewer(palette = "Set1") +
+                                                theme(
+                                                  legend.position="top",
+                                                  legend.title = element_blank()) +
+                                                guides(fill = guide_legend(override.aes = list(size = 5),
+                                                                           nrow = 3))
+                                                      ),
+                              nrow = 3,
+                              align = "hv",
+                              axis = "trbl")
+
+# cowplot::save_plot(filename = sprintf("%s/%s/breast_gene_expression_%s.pdf",
+#                                       an_breast_10x, plt_dir, i),
+#                    plot = tmp_plt,
+#                    base_height = 9,
+#                    base_width = 15)
+
+# cowplot::save_plot(filename = sprintf("%s/%s/breast_gene_expression_%s.svg",
+#                                       an_breast_10x, plt_dir, i),
+#                    plot = tmp_plt,
+#                    base_height = 9,
+#                    base_width = 15)
+tmp_plt
+
+"{an_breast_10x}/{plt_dir}/breast_gene_expression_{sample_id}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = tmp_plt,
+    base_height = 15,
+    base_width = 4)
 ```
 
 Extract metadata from Seurat object and join it with the deconvolution
 ```{r}
-metadata <- cbind(breast_merged@meta.data, decon_df)
+metadata <- se_obj@meta.data
 ```
 
 Format the data into long format
 ```{r}
-ct <- colnames(decon_df)[!colnames(decon_df) %in% "res_ss"]
-
 metadata_long <- metadata %>% 
-  tidyr::pivot_longer(cols = c("ESR1", "HER2", "HER2_ESR1"),
+  tidyr::pivot_longer(cols = c("HER2_ESR1"),
                       names_to = "stratification_id",
                       values_to = "stratification_val") %>%
   tidyr::pivot_longer(cols = all_of(ct), names_to = "immune_key", values_to = "immune_val") %>%
@@ -257,131 +330,141 @@ metadata_long <- metadata %>%
   dplyr::mutate(immune_val = dplyr::if_else(immune_val > 0.001, immune_val, 0))
 
 metadata_long %>% dplyr::count(immune_key)
-metadata_long %>% filter(immune_key == "B cell") %>% select(immune_key, immune_val)
+metadata_long %>% filter(immune_key == "B cells") %>% select(immune_key, immune_val)
 ```
 
 ### HER2-ESR1
 Box plot of cell type proportion between stratified regions showing the unadjusted ANOVA Pvalue
 ```{r}
-lapply(unique(metadata_long$slice), function(i) {
-  keep_ct <- metadata_long %>%
-    dplyr::filter(slice == i) %>%
-    dplyr::group_by(immune_key) %>%
-    dplyr::summarise(prop_sum = sum(immune_val)) %>% 
-    dplyr::filter(prop_sum > 0) %>%
-    dplyr::pull(immune_key)
+keep_ct <- metadata_long %>%
+  dplyr::group_by(immune_key) %>%
+  dplyr::summarise(prop_sum = sum(immune_val)) %>% 
+  dplyr::filter(prop_sum > 0) %>%
+  dplyr::pull(immune_key)
+
+bplt_her2_esr1 <- metadata_long %>%
+  dplyr::filter(stratification_id == "HER2_ESR1") %>%
+  dplyr::filter(immune_key %in% keep_ct) %>%
+  dplyr::mutate(
+    immune_key = stringr::str_wrap(string = immune_key,
+                                   width = 30)) %>%
+  dplyr::mutate(stratification_val = factor(stratification_val, 
+                                            levels = c("Fibrotic", "HER2+/ESR1+",
+                                                       "HER2+/ESR1-", "HER2-/ESR1+",
+                                                       "HER2-/ESR1-"))) %>%
+  # dplyr::filter(! plt_name %in% c("CD8 EM-like", "CD4 naive-like")) %>%
+  ggpubr::ggboxplot(data = .,
+                    x = "stratification_val",
+                    y = "immune_val",
+                    facet.by = "immune_key",
+                    color = "stratification_val",
+                    fill = "stratification_val",
+                    add = "jitter",
+                    scales = "free",
+                    repel = TRUE,
+                    outlier.shape = NA,
+                    alpha = 0.6,
+                    palette = "Set1") +
+  theme(
+    strip.text = element_text(size = 18, face = "bold"),
+    axis.text.y = element_text(size = 16),
+    axis.title.y = element_text(size = 20),
+    axis.text.x = element_text(size = 12, angle = 90, vjust = 0.5, hjust = 0.5),
+    legend.text = element_text(size = 18),
+    legend.title = element_blank(),
+    strip.background = element_blank()) +
+  labs(y = "Proportion",
+       color = "Regions",
+       fill = "Regions")
   
-  bplt_her2_esr1 <- metadata_long %>%
-    dplyr::filter(stratification_id == "HER2_ESR1" &
-                    slice == i) %>%
-    dplyr::filter(immune_key %in% keep_ct) %>%
-    dplyr::mutate(
-      immune_key = stringr::str_wrap(string = immune_key,
-                                     width = 30)) %>%
-    dplyr::mutate(stratification_val = factor(stratification_val, 
-                                              levels = c("Fibrotic", "HER2+/ESR1+",
-                                                         "HER2+/ESR1-", "HER2-/ESR1+",
-                                                         "HER2-/ESR1-"))) %>%
-    # dplyr::filter(! plt_name %in% c("CD8 EM-like", "CD4 naive-like")) %>%
-    ggpubr::ggboxplot(data = .,
-                      x = "stratification_val",
-                      y = "immune_val",
-                      facet.by = "immune_key",
-                      color = "stratification_val",
-                      fill = "stratification_val",
-                      add = "jitter",
-                      scales = "free",
-                      repel = TRUE,
-                      outlier.shape = NA,
-                      alpha = 0.6,
-                      palette = "Set1") +
-    theme(
-      strip.text = element_text(size = 18, face = "bold"),
-      axis.text.y = element_text(size = 16),
-      axis.title.y = element_text(size = 20),
-      axis.text.x = element_text(size = 12, angle = 90, vjust = 0.5, hjust = 0.5),
-      legend.text = element_text(size = 18),
-      legend.title = element_blank()) +
-    labs(y = "Proportion",
-         color = "Regions",
-         fill = "Regions")
-    
-  bplt_her2_esr1 <- bplt_her2_esr1 +
-    ggpubr::stat_compare_means(method = "anova", size = 6) +
-    scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
-  
-  cowplot::save_plot(filename = sprintf("~/Desktop/strat_bplot_breast_%s.pdf",
-                                        i),
-                     plot = bplt_her2_esr1,
-                     base_height = 20,
-                     base_width = 25)
-  
-  # cowplot::save_plot(filename = sprintf("%s/%s/strat_bplot_breast_%s.svg",
-  #                                       an_breast_10x, plt_dir, i),
-  #                    plot = bplt_her2_esr1,
-  #                    base_height = 12,
-  #                    base_width = 20)
-})
+bplt_her2_esr1 <- bplt_her2_esr1 +
+  ggpubr::stat_compare_means(method = "anova", size = 6) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.1)),
+    labels = function(x) sprintf("%.2f", x))
+
+"{an_breast_10x}/{plt_dir}/strat_bplot_breast_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = bplt_her2_esr1,
+    base_height = 25,
+    base_width = 25)
 ```
 
-Now only doing the boxplots for the celltypes of interest for the main figure
+Now only doing the boxplots for the cell types of interest for the main figure
 ```{r}
+# https://stackoverflow.com/questions/28436855/change-the-number-of-breaks-using-facet-grid-in-ggplot2
+# defining the breaks function, 
+# s is the scaling factor (cf. multiplicative expand)
+equal_breaks <- function(n = 3, s = 0.05, ...){
+  function(x){
+    # rescaling
+    d <- s * diff(range(x)) / (1 + 2 * s)
+    round(seq(min(x) + d, max(x) - d, length = n), 2)
+  }
+}
+
 # i = unique(metadata_long$slice)[1]
-lapply(unique(metadata_long$slice), function(i) {
-
-  bplt_her2_esr1 <- metadata_long %>%
-    dplyr::filter(stratification_id == "HER2_ESR1" &
-                    slice == i) %>%
-    dplyr::filter(immune_key %in% ct_interest) %>%
-    dplyr::mutate(immune_key = stringr::str_wrap(string = immune_key,
-                                                 width = 30)) %>%
-    dplyr::mutate(stratification_val = factor(stratification_val, 
-                                              levels = c("Fibrotic", "HER2+/ESR1+",
-                                                         "HER2+/ESR1-", "HER2-/ESR1+",
-                                                         "HER2-/ESR1-"))) %>%
-    # dplyr::filter(! plt_name %in% c("CD8 EM-like", "CD4 naive-like")) %>%
-    ggpubr::ggboxplot(data = .,
-                      x = "stratification_val",
-                      y = "immune_val",
-                      facet.by = "immune_key",
-                      color = "stratification_val",
-                      fill = "stratification_val",
-                      add = "jitter",
-                      scales = "free",
-                      repel = TRUE,
-                      outlier.shape = NA,
-                      alpha = 0.6,
-                      palette = "Set1") +
-    theme(
-      strip.text = element_text(size = 16, face = "bold"),
-      axis.text.x = element_text(size = 10, angle = 30, hjust = 1),
-      axis.text.y = element_text(size = 14),
-      legend.text = element_text(size = 14),
-      legend.title = element_text(size = 16, face = "bold"),
-      axis.title.y = element_text(size = 14, face = "bold"),
-      axis.title.x = element_blank()) +
-    labs(y = "Proportion",
-         color = "Regions",
-         fill = "Regions") +
-    scale_y_continuous(limits = c(0, NA))
-    
-  bplt_her2_esr1 <- bplt_her2_esr1 +
-    ggpubr::stat_compare_means(method = "anova", size = 5) +
-    scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+bplt_her2_esr1_int <- metadata_long %>%
+  dplyr::filter(stratification_id == "HER2_ESR1") %>%
+  dplyr::filter(immune_key %in% ct_interest) %>%
+  dplyr::mutate(immune_key = stringr::str_wrap(string = immune_key,
+                                               width = 30)) %>%
+  dplyr::mutate(stratification_val = factor(stratification_val, 
+                                            levels = c("Fibrotic", "HER2+/ESR1+",
+                                                       "HER2+/ESR1-", "HER2-/ESR1+",
+                                                       "HER2-/ESR1-"))) %>%
+  # dplyr::filter(! plt_name %in% c("CD8 EM-like", "CD4 naive-like")) %>%
+  ggpubr::ggboxplot(data = .,
+                    x = "stratification_val",
+                    y = "immune_val",
+                    facet.by = "immune_key",
+                    color = "stratification_val",
+                    fill = "stratification_val",
+                    add = "jitter",
+                    scales = "free",
+                    repel = TRUE,
+                    outlier.shape = NA,
+                    alpha = 0.6,
+                    palette = "Set1") +
+  ggplot2::theme(
+    strip.text = ggplot2::element_text(size = 16, face = "bold"),
+    axis.text.x = ggplot2::element_blank(),
+    axis.text.y = ggplot2::element_text(size = 16, hjust = 1),
+    legend.text = ggplot2::element_text(size = 16),
+    legend.title = ggplot2::element_text(size = 16, face = "bold"),
+    axis.title.y = ggplot2::element_text(size = 16, face = "bold"),
+    axis.title.x = ggplot2::element_blank(),
+  strip.background = ggplot2::element_blank()) +
+  ggplot2::labs(y = "Proportion",
+       color = "Regions",
+       fill = "Regions") +
+  ggplot2::scale_y_continuous(
+    # Set exactly 3 breaks
+    breaks = equal_breaks(n = 3, s = 0.05),
+    # use same s as first expand argument, 
+    # second expand argument should be 0
+    expand = c(0.05, 0),
+    # Remove unnecessary 0 to the right of the decimal
+    labels = function(x) sapply(x, FUN = function(i) format(x = i, nsmall = 0)))
+  # scale_y_continuous(
+  #   limits = c(0, NA),
+  #   labels = function(x) sprintf("%.2f", x))
   
-  cowplot::save_plot(filename = sprintf("%s/%s/strat_bplot_breast_%s_interest.pdf",
-                                        an_breast_10x, plt_dir, i),
-                     plot = bplt_her2_esr1,
-                     base_height = 10,
-                     base_width = 12)
-  
-  cowplot::save_plot(filename = sprintf("%s/%s/strat_bplot_breast_%s_interest.svg",
-                                        an_breast_10x, plt_dir, i),
-                     plot = bplt_her2_esr1,
-                     base_height = 10,
-                     base_width = 12)
-})
+bplt_her2_esr1_int +
+  ggpubr::stat_compare_means(method = "anova", size = 5) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
 
+"{an_breast_10x}/{plt_dir}/strat_bplot_breast_{sample_id}_{clust_vr}_interest.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = bplt_her2_esr1_int,
+    base_height = 8,
+    base_width = 12)
 ```
 
 ```{r eval = FALSE}
@@ -428,169 +511,152 @@ bplt_her2_esr1 +
 
 ```
 
-#### Heatmap
+#### Localization Heatmap
 Proportion heatmap, Here we look at the proportion of spots within each stratified regions contains a cell type regardless of its proportion.
 ```{r}
-ct_mod <- gsub(pattern = "[[:punct:]]|[[:blank:]]", ".",
-                               x = cell_types, 
-                               perl = TRUE)
-lapply(unique(metadata$slice), function(i) {
-  tmp_df <- metadata %>%
-    dplyr::filter(slice == i) %>% 
-    # dplyr::select(-c("res_ss")) %>%
-    dplyr::mutate(total = 1) %>%
-    dplyr::select(all_of(c(cell_types, "total", "HER2_ESR1"))) %>%
-    tidyr::pivot_longer(cols = all_of(cell_types)) %>%
-    dplyr::mutate(value = if_else(value < 0.001, 0, 1)) %>%
-    dplyr::group_by(name, HER2_ESR1) %>%
-    dplyr::summarise(freq = sum(value) / sum(total))
+tmp_df <- metadata %>%
+  dplyr::mutate(total = 1) %>%
+  dplyr::select(all_of(c(ct, "total", "HER2_ESR1"))) %>%
+  tidyr::pivot_longer(cols = all_of(ct)) %>%
+  dplyr::mutate(value = if_else(value < 0.001, 0, 1)) %>%
+  dplyr::group_by(name, HER2_ESR1) %>%
+  dplyr::summarise(freq = sum(value) / sum(total))
 
-  # Plot heatmap
-  hm_tmp <- tmp_df %>%
-    ggplot(aes(x = HER2_ESR1, 
-               y = name, 
-               fill= freq)) + 
-    geom_tile(color = "lightgrey") +
-    geom_text(aes(label = round(freq, 2)), 
-              show.legend = FALSE) +
-    labs(title = "Breast carcinoma cell-type enrichment by region",
-         y = "Cell types", 
-         x = "",
-         fill = "Proportion") +
-    theme_classic() +
-    scale_y_discrete(limits = rev(paula_order),
-                     labels = stringr::str_wrap(string = rev(paula_order),
-                                                width = 21)) +
-    scale_fill_gradient(low = "#FFF5F0",
-                        high = "#99000D",
-                        guide = "legend",
-                        limits = c(0, 1),
-                        breaks = seq(0, 1, 0.1)) +
-    scale_alpha_continuous(guide = "legend",
-                           limits = c(0, 1), 
-                           breaks = seq(0, 1, 0.1)) +
-    theme(axis.text.x = element_text(size = 12, angle = 90, vjust = 0.5),
-          axis.text.y = element_text(size = 15),
-          legend.text = element_text(size = 12),
-          legend.title = element_text(size = 17),
-          plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
-          axis.title = element_text(size = 15),
-          axis.line = element_blank())
-  
-  cowplot::save_plot(filename = sprintf("%s/%s/strat_heatmap_breast_%s.pdf",
-                                        an_breast_10x, plt_dir, i),
-                     plot = hm_tmp,
-                     base_height = 15,
-                     base_width = 9)
-  
-  cowplot::save_plot(filename = sprintf("%s/%s/strat_heatmap_breast_%s.svg",
-                                        an_breast_10x, plt_dir, i),
-                     plot = hm_tmp,
-                     base_height = 15,
-                     base_width = 9)
-  
-  # Plot heatmap without text
-  hm_tmp <- tmp_df %>%
-    ggplot(aes(x = HER2_ESR1, 
-               y = name, 
-               fill= freq)) + 
-    geom_tile(color = "lightgrey") +
-    # geom_text(aes(label = round(freq, 2)), 
-    #           show.legend = FALSE) +
-    labs(title = "Breast carcinoma cell-type enrichment by region",
-         y = "Cell types", 
-         x = "",
-         fill = "Proportion") +
-    theme_classic() +
-    scale_y_discrete(limits = rev(paula_order)) +
-    scale_fill_gradient(low = "#FFF5F0",
-                        high = "#99000D",
-                        guide = "legend",
-                        limits = c(0, 1),
-                        breaks = seq(0, 1, 0.1)) +
-    scale_alpha_continuous(guide = "legend",
-                           limits = c(0, 1), 
-                           breaks = seq(0, 1, 0.1)) +
-    theme(axis.text.x = element_text(size = 12, angle = 90, vjust = 0.5),
-          axis.text.y = element_text(size = 15),
-          legend.text = element_text(size = 12),
-          legend.title = element_text(size = 17),
-          plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
-          axis.title = element_text(size = 15),
-          axis.line = element_blank())
-  
-  # cowplot::save_plot(filename = sprintf("%s/%s/strat_heatmap_breast_%s_labelless.pdf",
-  #                                       an_breast_10x, plt_dir, i),
-  #                    plot = hm_tmp,
-  #                    base_height = 15,
-  #                    base_width = 9)
-  
-  cowplot::save_plot(filename = sprintf("%s/%s/strat_heatmap_breast_%s_labelless.svg",
-                                        an_breast_10x, plt_dir, i),
-                     plot = hm_tmp,
-                     base_height = 15,
-                     base_width = 9)
-})
+# Plot heatmap
+hm_tmp <- tmp_df %>%
+  ggplot(aes(x = HER2_ESR1, 
+             y = name, 
+             fill= freq)) + 
+  geom_tile(color = "lightgrey") +
+  geom_text(aes(label = round(freq, 2)), 
+            show.legend = FALSE) +
+  labs(title = "Breast carcinoma cell-type enrichment by region",
+       y = "Cell types", 
+       x = "",
+       fill = "Proportion") +
+  theme_classic() +
+  scale_y_discrete(limits = rev(ct),
+                   labels = stringr::str_wrap(
+                     string = rev(ct),
+                     width = 21)) +
+  scale_fill_gradient(low = "#FFF5F0",
+                      high = "#99000D",
+                      guide = "legend",
+                      limits = c(0, 1),
+                      breaks = seq(0, 1, 0.1)) +
+  scale_alpha_continuous(guide = "legend",
+                         limits = c(0, 1), 
+                         breaks = seq(0, 1, 0.1)) +
+  theme(axis.text.x = element_text(size = 12, angle = 90, vjust = 0.5),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 17),
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+        axis.title = element_text(size = 15),
+        axis.line = element_blank())
 
+hm_tmp
+
+"{an_breast_10x}/{plt_dir}/strat_heatmap_breast_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = hm_tmp,
+    base_height = 15,
+    base_width = 9)
+
+# Plot heatmap without text
+hm_tmp2 <- tmp_df %>%
+  ggplot(aes(x = HER2_ESR1, 
+             y = name, 
+             fill= freq)) + 
+  geom_tile(color = "lightgrey") +
+  # geom_text(aes(label = round(freq, 2)), 
+  #           show.legend = FALSE) +
+  labs(title = "Breast carcinoma cell-type enrichment by region",
+       y = "Cell types", 
+       x = "",
+       fill = "Proportion") +
+  theme_classic() +
+  scale_y_discrete(limits = rev(ct)) +
+  scale_fill_gradient(low = "#FFF5F0",
+                      high = "#99000D",
+                      guide = "legend",
+                      limits = c(0, 1),
+                      breaks = seq(0, 1, 0.1)) +
+  scale_alpha_continuous(guide = "legend",
+                         limits = c(0, 1), 
+                         breaks = seq(0, 1, 0.1)) +
+  theme(axis.text.x = element_text(size = 12, angle = 90, vjust = 0.5),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 17),
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+        axis.title = element_text(size = 15),
+        axis.line = element_blank())
+
+
+"{an_breast_10x}/{plt_dir}/strat_heatmap_breast_{sample_id}_{clust_vr}_labelless.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = hm_tmp2,
+    base_height = 15,
+    base_width = 9)
 ```
 
 Now heatmap with only cells of interest
-```{r}
-lapply(unique(metadata$slice), function(i) {
-  tmp_df <- metadata %>%
-    dplyr::filter(slice == i) %>% 
-    # dplyr::select(-c("res_ss")) %>%
-    dplyr::mutate(total = 1) %>%
-    dplyr::select(all_of(c(ct_interest, "total", "HER2_ESR1"))) %>%
-    tidyr::pivot_longer(cols = all_of(ct_interest)) %>%
-    dplyr::mutate(value = if_else(value < 0.001, 0, 1)) %>%
-    dplyr::group_by(name, HER2_ESR1) %>%
-    dplyr::summarise(freq = sum(value) / sum(total))
+```{r eval = FALSE}
+tmp_df <- metadata %>%
+  dplyr::mutate(total = 1) %>%
+  dplyr::select(all_of(c(ct_interest, "total", "HER2_ESR1"))) %>%
+  tidyr::pivot_longer(cols = all_of(ct_interest)) %>%
+  dplyr::mutate(value = if_else(value < 0.001, 0, 1)) %>%
+  dplyr::group_by(name, HER2_ESR1) %>%
+  dplyr::summarise(freq = sum(value) / sum(total))
 
-  # Plot heatmap without text
-  hm_tmp <- tmp_df %>%
-    ggplot(aes(x = HER2_ESR1, 
-               y = name, 
-               fill= freq)) + 
-    geom_tile(color = "lightgrey") +
-    # geom_text(aes(label = round(freq, 2)), 
-    #           show.legend = FALSE) +
-    labs(title = "Breast carcinoma cell-type enrichment by region",
-         y = "Cell types", 
-         x = "",
-         fill = "Proportion") +
-    theme_classic() +
-    scale_y_discrete(limits = rev(ct_interest),
-                     labels = stringr::str_wrap(string = rev(ct_interest),
-                                                width = 21)) +
-    scale_fill_gradient(low = "#FFF5F0",
-                        high = "#99000D",
-                        guide = "legend",
-                        limits = c(0, 1),
-                        breaks = seq(0, 1, 0.1)) +
-    scale_alpha_continuous(guide = "legend",
-                           limits = c(0, 1), 
-                           breaks = seq(0, 1, 0.1)) +
-    theme(axis.text.x = element_text(size = 12, angle = 90, vjust = 0.5),
-          axis.text.y = element_text(size = 15),
-          legend.text = element_text(size = 12),
-          legend.title = element_text(size = 17),
-          plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
-          axis.title = element_text(size = 15),
-          axis.line = element_blank())
-  
-  # cowplot::save_plot(filename = sprintf("%s/%s/strat_heatmap_breast_%s_interest_labelless.pdf",
-  #                                       an_breast_10x, plt_dir, i),
-  #                    plot = hm_tmp,
-  #                    base_height = 15,
-  #                    base_width = 9)
-  
-  cowplot::save_plot(filename = sprintf("%s/%s/strat_heatmap_breast_%s_interest_labelless.svg",
-                                        an_breast_10x, plt_dir, i),
-                     plot = hm_tmp,
-                     base_height = 15,
-                     base_width = 9)
-})
+# Plot heatmap without text
+hm_tmp_int <- tmp_df %>%
+  ggplot(aes(x = HER2_ESR1, 
+             y = name, 
+             fill= freq)) + 
+  geom_tile(color = "lightgrey") +
+  # geom_text(aes(label = round(freq, 2)), 
+  #           show.legend = FALSE) +
+  labs(title = "Breast carcinoma cell-type enrichment by region",
+       y = "Cell types", 
+       x = "",
+       fill = "Proportion") +
+  theme_classic() +
+  scale_y_discrete(limits = rev(ct_interest),
+                   labels = stringr::str_wrap(string = rev(ct_interest),
+                                              width = 21)) +
+  scale_fill_gradient(low = "#FFF5F0",
+                      high = "#99000D",
+                      guide = "legend",
+                      limits = c(0, 1),
+                      breaks = seq(0, 1, 0.1)) +
+  scale_alpha_continuous(guide = "legend",
+                         limits = c(0, 1), 
+                         breaks = seq(0, 1, 0.1)) +
+  theme(axis.text.x = element_text(size = 12, angle = 90, vjust = 0.5),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 17),
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+        axis.title = element_text(size = 15),
+        axis.line = element_blank())
+
+"{an_breast_10x}/{plt_dir}/strat_heatmap_breast_{sample_id}_{clust_vr}_labelless_interest.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = hm_tmp_int,
+    base_height = 15,
+    base_width = 9)
 ```
 
 
@@ -603,341 +669,212 @@ http://www.sthda.com/english/wiki/ggcorrplot-visualization-of-a-correlation-matr
 
 Get correlation matrix between all cell types
 ```{r}
-# library(corrplot)
-library(ggcorrplot)# mat is a matrix object
+decon_df <- metadata %>%
+  dplyr::select(all_of(ct))
 
-cor.mtest <- function(mat, conf.level = 0.95){
-    mat <- as.matrix(mat)
-    n <- ncol(mat)
-    p.mat <- lowCI.mat <- uppCI.mat <- matrix(NA, n, n)
-    diag(p.mat) <- 0
-    diag(lowCI.mat) <- diag(uppCI.mat) <- 1
-    for(i in 1:(n-1)){
-        for(j in (i+1):n){
-            tmp <- cor.test(mat[,i], mat[,j], conf.level = conf.level)
-            p.mat[i,j] <- p.mat[j,i] <- tmp$p.value
-            lowCI.mat[i,j] <- lowCI.mat[j,i] <- tmp$conf.int[1]
-            uppCI.mat[i,j] <- uppCI.mat[j,i] <- tmp$conf.int[2]
-        }
-    }
-    return(list(p.mat, lowCI.mat, uppCI.mat))
-}
+# Remove cell types not predicted to be on the tissue
+decon_df <- decon_df[, colSums(decon_df) > 0]
+decon_cor <- cor(decon_df)
 
-lapply(unique(metadata$slice), function(i) {
-  decon_df <- metadata %>%
-    dplyr::filter(slice == i) %>%
-    dplyr::select(all_of(paula_order))
-  # Remove cell types not predicted to be on the tissue
-  decon_df <- decon_df[, colSums(decon_df) > 0]
-  decon_cor <- cor(decon_df)
-  
-  # corrplot(decon_cor, method="circle" ,type = "upper")
-  
-  # Compute correlation P-value
-  p.mat <- cor.mtest(decon_df, 0.95)
-  colnames(decon_cor) <- stringr::str_wrap(string = colnames(decon_cor), width = 30)
-  rownames(decon_cor) <- stringr::str_wrap(string = rownames(decon_cor), width = 30)
-  cor_plt <- ggcorrplot::ggcorrplot(corr = decon_cor,
-             p.mat = p.mat[[1]],
-             hc.order = TRUE,
-             type = "full",
-             insig = "blank",
-             lab = TRUE,
-             outline.col = "lightgrey",
-             method = "square",
-             # colors = c("#4477AA", "white", "#BB4444"))
-             colors = c("#6D9EC1", "white", "#E46726"),
-             title = "Breast carcinoma cell-cell proportion correlation",
-             legend.title = "Correlation\n(Pearson)") +
-     theme(
-      plot.title = element_text(size = 22, hjust = 0.5, face = "bold"),
-      legend.text = element_text(size = 12),
-      legend.title = element_text(size = 15),
-      axis.text.x = element_text(angle = 90),
-      axis.text = element_text(size = 18, vjust = 0.5))
-  cor_plt
-  # cowplot::save_plot(plot = cor_plt,
-  #                  filename = sprintf("%s/%s/correlation_plot_breast_%s.pdf",
-  #                      an_breast_10x, plt_dir, i),
-  #                  base_width = 16,
-  #                  base_height = 12)
-  
-  cowplot::save_plot(plot = cor_plt,
-                   filename = sprintf("%s/%s/correlation_plot_breast_%s.svg",
-                       an_breast_10x, plt_dir, i),
-                   base_width = 16,
-                   base_height = 12)
-  
-  # Now without labels
-  cor_plt <- ggcorrplot(corr = decon_cor,
-             p.mat = p.mat[[1]],
-             hc.order = TRUE,
-             type = "full",
-             insig = "blank",
-             lab = FALSE,
-             outline.col = "lightgrey",
-             method = "square",
-             # colors = c("#4477AA", "white", "#BB4444"))
-             colors = c("#6D9EC1", "white", "#E46726"),
-             title = "Breast carcinoma cell-cell proportion correlation",
-             legend.title = "Correlation\n(Pearson)") +
-    theme(
-      plot.title = element_text(size = 25, hjust = 0.5, face = "bold"),
-      legend.text = element_text(size = 18),
-      legend.title = element_text(size = 22),
-      axis.text.x = element_text(angle = 90, size = 18, vjust = 0.5),
-      axis.text.y = element_text(vjust = 0.5, size = 18))
-  
-  # cowplot::save_plot(plot = cor_plt,
-  #                  filename = sprintf("%s/%s/correlation_plot_breast_%s_labeless.pdf",
-  #                      an_breast_10x, plt_dir, i),
-  #                  base_width = 16,
-  #                  base_height = 12)
-  
-  cowplot::save_plot(plot = cor_plt,
-                   filename = sprintf("%s/%s/correlation_plot_breast_%s_labeless.svg",
-                       an_breast_10x, plt_dir, i),
-                   base_width = 16,
-                   base_height = 12)
-})
+# Compute correlation P-value
+p.mat <- corrplot::cor.mtest(mat = decon_df, conf.level = 0.95)
+colnames(decon_cor) <- stringr::str_wrap(string = colnames(decon_cor), width = 30)
+rownames(decon_cor) <- stringr::str_wrap(string = rownames(decon_cor), width = 30)
+
+
+cor_plt <- ggcorrplot::ggcorrplot(corr = decon_cor,
+           p.mat = p.mat[[1]],
+           hc.order = TRUE,
+           type = "full",
+           insig = "blank",
+           lab = TRUE,
+           outline.col = "lightgrey",
+           method = "square",
+           # colors = c("#4477AA", "white", "#BB4444"))
+           colors = c("#6D9EC1", "white", "#E46726"),
+           title = "Breast carcinoma cell-cell proportion correlation",
+           legend.title = "Correlation\n(Pearson)") +
+   theme(
+    plot.title = element_text(size = 22, hjust = 0.5, face = "bold"),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 15),
+    axis.text.x = element_text(angle = 90),
+    axis.text = element_text(size = 18, vjust = 0.5))
+cor_plt
+# cowplot::save_plot(plot = cor_plt,
+#                  filename = sprintf("%s/%s/correlation_plot_breast_%s.pdf",
+#                      an_breast_10x, plt_dir, i),
+#                  base_width = 16,
+#                  base_height = 12)
+
+"{an_breast_10x}/{plt_dir}/correlation_plot_breast_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = cor_plt,
+    base_height = 16,
+    base_width = 12)
+
+# Now without labels
+cor_plt2 <- ggcorrplot::ggcorrplot(corr = decon_cor,
+           p.mat = p.mat[[1]],
+           hc.order = TRUE,
+           type = "full",
+           insig = "blank",
+           lab = FALSE,
+           outline.col = "lightgrey",
+           method = "square",
+           # colors = c("#4477AA", "white", "#BB4444"))
+           colors = c("#6D9EC1", "white", "#E46726"),
+           title = glue::glue("Breast carcinoma cell-cell proportion correlation\nSample-{sample_id}"),
+           legend.title = "Correlation\n(Pearson)") +
+  theme(
+    plot.title = element_text(size = 25, hjust = 0.5, face = "bold"),
+    legend.text = element_text(size = 18),
+    legend.title = element_text(size = 22),
+    axis.text.x = element_text(angle = 90, size = 18, vjust = 0.5),
+    axis.text.y = element_text(vjust = 0.5, size = 18))
+
+cor_plt2
+
+"{an_breast_10x}/{plt_dir}/correlation_plot_breast_{sample_id}_{clust_vr}_labelless.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = cor_plt2,
+    base_height = 16,
+    base_width = 12)
 ```
 
 ### Correlation scatterplots
 Select top 16 scatterplots pairs
-```{r}
-lapply(unique(metadata$slice), function(i) {
-  decon_df <- metadata %>%
-  dplyr::filter(slice == i) %>%
-  dplyr::select(all_of(paula_order))
-  # Remove cell types not predicted to be on the tissue
-  decon_df <- decon_df[, colSums(decon_df) > 0]
-  decon_cor <- cor(decon_df)
+```{r eval = FALSE}
+decon_df <- metadata %>%
+  dplyr::select(all_of(ct))
+# Remove cell types not predicted to be on the tissue
+decon_df <- decon_df[, colSums(decon_df) > 0]
+decon_cor <- cor(decon_df)
 
-  decon_cor[lower.tri(decon_cor)] <- NA
-  decon_low <- data.frame(decon_cor)
-  colnames(decon_low) <- rownames(decon_low)
+decon_cor[lower.tri(decon_cor)] <- NA
+decon_low <- data.frame(decon_cor)
+colnames(decon_low) <- rownames(decon_low)
+
+ct_scatterplot <- decon_low %>%
+  tibble::rownames_to_column("ct_1") %>% 
+  tidyr::pivot_longer(cols = colnames(decon_cor),
+                      names_to ="ct_2",
+                      values_to = "cor_val") %>%
+  dplyr::filter(ct_1 != ct_2) %>%
+  dplyr::arrange(desc(abs(cor_val))) %>%
+  head(16) %>%
+  dplyr::mutate(ct_12 = sprintf("%s.%s", ct_1, ct_2)) %>%
+  dplyr::pull(ct_12)
+
+corr_plts <- lapply(ct_scatterplot, function(i) {
+  # separate ct_12
+  str_ls <- stringr::str_split(i, "\\.")
+  ct1 <-str_ls[[1]][[1]]
+  ct2 <-str_ls[[1]][[2]]
   
-  ct_scatterplot <- decon_low %>%
-    tibble::rownames_to_column("ct_1") %>% 
-    tidyr::pivot_longer(cols = colnames(decon_cor),
-                        names_to ="ct_2",
-                        values_to = "cor_val") %>%
-    dplyr::filter(ct_1 != ct_2) %>%
-    dplyr::arrange(desc(abs(cor_val))) %>%
-    head(16) %>%
-    dplyr::mutate(ct_12 = sprintf("%s.%s", ct_1, ct_2)) %>%
-    dplyr::pull(ct_12)
-  
-  corr_plts <- lapply(ct_scatterplot, function(i) {
-    # separate ct_12
-    str_ls <- stringr::str_split(i, "\\.")
-    ct1 <-str_ls[[1]][[1]]
-    ct2 <-str_ls[[1]][[2]]
-    
-    ggplot(decon_df,
-           aes(x = decon_df[, ct1], y = decon_df[, ct2])) +
-      geom_point() +
-      ggpubr::stat_cor(method = "pearson",label.y = max(decon_df[, ct2]) + 0.05) +
-      labs(x = stringr::str_wrap(sprintf("%s proportion", ct1), width = 30),
-           y = stringr::str_wrap(sprintf("%s proportion", ct2), width = 30)) +
-      theme_classic()
-    }) %>%
-    cowplot::plot_grid(plotlist = ., nrow = 4,ncol = 4)
-  
-  # cowplot::save_plot(filename = sprintf("%s/%s/scater_cor_plot_breast_%s.pdf",
-  #                        an_breast_10x, plt_dir, slice),
-  #                    plot = corr_plts,
-  #                    base_height = 12,
-  #                    base_width = 16)
-  
-  cowplot::save_plot(filename = sprintf("%s/%s/scater_cor_plot_breast_%s.svg",
-                         an_breast_10x, plt_dir, slice),
-                     plot = corr_plts,
-                     base_height = 12,
-                     base_width = 16)
-})
+  ggplot(decon_df,
+         aes(x = decon_df[, ct1], y = decon_df[, ct2])) +
+    geom_point() +
+    ggpubr::stat_cor(method = "pearson",label.y = max(decon_df[, ct2]) + 0.05) +
+    labs(x = stringr::str_wrap(sprintf("%s proportion", ct1), width = 30),
+         y = stringr::str_wrap(sprintf("%s proportion", ct2), width = 30)) +
+    theme_classic()
+  }) %>%
+  cowplot::plot_grid(
+    plotlist = .,
+    nrow = 4,
+    ncol = 4,
+    align = "hv",
+    axis = "trbl")
+
+# cowplot::save_plot(filename = sprintf("%s/%s/scater_cor_plot_breast_%s.pdf",
+#                        an_breast_10x, plt_dir, slice),
+#                    plot = corr_plts,
+#                    base_height = 12,
+#                    base_width = 16)
+
+"{an_breast_10x}/{plt_dir}/scater_cor_plot_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = corr_plts,
+    base_height = 12,
+    base_width = 16)
 ```
 
 Lastly we are going to plot pairs of interest for the main figure
-```{r}
-# list of pairs
-pairs_int <- c("Proliferative T cells.Regulatory T cells",
-               "Proliferative T cells.T helper cells",
-               "Cytotoxic CD8 T cells.T helper cells",
-               "pDC.T helper cells",
-               "Regulatory T cells.T helper cells",
-               "Regulatory T cells.NK")
-
+```{r eval = FALSE}
+if (clust_vr == "lv2_annot") {
+  pairs_int <- c("Proliferation-CD8.IFN.activated",
+                 "Proliferation-CD4.activated",
+                 "CD8.exhausted-T.helper.Th17",
+                 "CD4.activated-TAMs.C1QC",
+                 "NK-TAMs.C1QC",
+                 "CD8.exhausted-TAMs.C1QC")
+} else if (clust_vr == "lv1_annot") {
+  pairs_int <- c("TAMs C1QC-Macrophages SPP1",
+                 "Proliferation-Macrophages SPP1",
+                 "Proliferation-CD8 terminally exhausted",
+                 "TAMs C1QC-CD8 terminally exhausted",
+                 "TAMs C1QC-NK",
+                 "Proliferation-NK")
+}
 ```
 
 Iterate over the pairs
-```{r}
-lapply(unique(metadata$slice), function(i) {
+```{r eval = FALSE}
+decon_df <- metadata %>%
+  dplyr::select(all_of(ct))
+  # Remove cell types not predicted to be on the tissue
+decon_df <- decon_df[, colSums(decon_df) > 0]
+
+scater_interest <- lapply(pairs_int, function(i) {
+  # separate ct_12
+  str_ls <- stringr::str_split(string = i, pattern = "-",simplify = TRUE)
+  ct1 <-str_ls[[1]]
+  ct2 <-str_ls[[2]]
   
-  decon_df <- metadata %>%
-    dplyr::filter(slice == i) %>%
-    dplyr::select(all_of(paula_order))
-    # Remove cell types not predicted to be on the tissue
-  decon_df <- decon_df[, colSums(decon_df) > 0]
+  ggplot(decon_df,
+         aes(x = decon_df[, ct1], y = decon_df[, ct2])) +
+    geom_point() +
+    ggpubr::stat_cor(method = "pearson",
+                     label.y = max(decon_df[, ct2]) + 0.05,
+                     size = 5) +
+    labs(x = stringr::str_wrap(sprintf("%s proportion", ct1), width = 30),
+         y = stringr::str_wrap(sprintf("%s proportion", ct2), width = 30)) +
+    theme_classic() +
+    theme(
+      axis.text = element_text(size = 16),
+      axis.title = element_text(size = 20))
+  }) %>%
+  cowplot::plot_grid(
+    plotlist = .,
+    nrow = 3,
+    ncol = 2,
+    align = "hv",
+    axis = "trbl")
 
-  scater_interest <- lapply(pairs_int, function(i) {
-    # separate ct_12
-    str_ls <- stringr::str_split(i, "\\.")
-    ct1 <-str_ls[[1]][[1]]
-    ct2 <-str_ls[[1]][[2]]
-    
-    ggplot(decon_df,
-           aes(x = decon_df[, ct1], y = decon_df[, ct2])) +
-      geom_point() +
-      ggpubr::stat_cor(method = "pearson",
-                       label.y = max(decon_df[, ct2]) + 0.05,
-                       size = 5) +
-      labs(x = stringr::str_wrap(sprintf("%s proportion", ct1), width = 30),
-           y = stringr::str_wrap(sprintf("%s proportion", ct2), width = 30)) +
-      theme_classic() +
-      theme(
-        axis.text = element_text(size = 16),
-        axis.title = element_text(size = 20))
-    }) %>%
-    cowplot::plot_grid(plotlist = ., nrow = 3,ncol = 2)
-  
-  # cowplot::save_plot(filename = sprintf("%s/%s/scatter_cor_plot_breast_%s_interest.pdf",
-  #                                       an_breast_10x, plt_dir, i),
-  #                    plot = scater_interest,
-  #                    base_height = 6,
-  #                    base_width = 12)
-  # 
-  cowplot::save_plot(filename = sprintf("%s/%s/scatter_cor_plot_breast_%s_interest.svg",
-                                        an_breast_10x, plt_dir, i),
-                     plot = scater_interest,
-                     base_height = 14,
-                     base_width = 12)
-})
+scater_interest
+
+"{an_breast_10x}/{plt_dir}/scater_cor_plot_{sample_id}_{clust_vr}_interest.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = scater_interest,
+    base_height = 16,
+    base_width = 12)
 ```
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
-```
-
-### ESR1
+## Session Info
 ```{r}
-bplt_esr1 <- metadata_long %>%
-  dplyr::filter(stratification_id == "ESR1") %>%
-  dplyr::mutate(stratification_val = factor(stratification_val, levels = c("Fibrotic", "ESR1+", "ESR1-"))) %>% 
-  # dplyr::filter(! plt_name %in% c("CD8 EM-like", "CD4 naive-like")) %>%
-  ggpubr::ggboxplot(data = .,
-                    x = "stratification_val",
-                    y = "immune_val",
-                    facet.by = "plt_name",
-                    color = "stratification_val",
-                    fill = "stratification_val",
-                    add = "jitter",
-                    scales = "free",
-                    repel = TRUE,
-                    outlier.shape = NA,
-                    alpha = 0.6,
-                    palette = c("#c7c5c1", # grey
-                                "#4b8204", # green
-                                "#9c7a1c" # brown
-                                ))
+sessionInfo()
 ```
-
-```{r}
-# Define list of pairwise interactions to test
-my_comparisons <- list( c("Fibrotic", "ESR1+"),
-                        c("Fibrotic", "ESR1-"),
-                        c("ESR1-", "ESR1+") )
-
-y_pos <- metadata_long %>% 
-  dplyr::filter(stratification_id == "ESR1") %>%
-  group_by(plt_name) %>%
-  summarise(y.position = max(immune_val))
-
-# T-test annotation table with adjusted pvals and y-position of the labels
-anno_df_wilcox_esr1 <- metadata_long %>% 
-  dplyr::filter(stratification_id == "ESR1") %>% 
-  # dplyr::filter(! plt_name %in% c("CD8 EM-like", "CD4 naive-like")) %>%
-  ggpubr::compare_means(data = .,
-                        formula = immune_val ~ stratification_val,
-                        method = "wilcox.test",
-                        group.by = "plt_name",
-                        p.adjust.method = "bonferroni",
-                        comparisons = my_comparisons) %>% 
-    dplyr::left_join(y_pos, by = "plt_name") %>% 
-    dplyr::mutate(y.position = if_else(group1 == "Fibrotic" & 
-                                       group2 == "ESR1+", 
-                                     y.position * 0.7, 
-                                     if_else(group1 == "Fibrotic" &
-                                               group2 == "ESR1-", 
-                                             y.position * 0.8,
-                                             y.position * 0.93)))
-bplt_esr1 +
-  ggpubr::stat_pvalue_manual(data = anno_df_wilcox_esr1,
-                             label = "p = {p.adj}",
-                             y.position = "y.position",
-                             size = 3) +
-  theme(strip.text = element_text(size = 12, face = "bold"))
-```
-
-### HER2
-```{r}
-bplt_her2 <- metadata_long %>% 
-  dplyr::filter(stratification_id == "HER2") %>%
-  dplyr::mutate(stratification_val = factor(stratification_val, levels = c("Fibrotic", "HER2+", "HER2-"))) %>% 
-  # dplyr::filter(! plt_name %in% c("CD8 EM-like", "CD4 naive-like")) %>%
-  ggpubr::ggboxplot(data = .,
-                    x = "stratification_val",
-                    y = "immune_val",
-                    facet.by = "plt_name",
-                    color = "stratification_val",
-                    fill = "stratification_val",
-                    add = "jitter",
-                    scales = "free",
-                    repel = TRUE,
-                    outlier.shape = NA,
-                    alpha = 0.6,
-                    palette = c("#c7c5c1", # grey
-                                "#4b8204", # green
-                                "#9c7a1c" # brown
-                                ))
-```
-
-```{r}
-# Define list of pairwise interactions to test
-my_comparisons <- list( c("Fibrotic", "HER2+"),
-                        c("Fibrotic", "HER2-"),
-                        c("HER2-", "HER2+") )
-
-y_pos <- metadata_long %>% 
-  dplyr::filter(stratification_id == "HER2") %>%
-  group_by(plt_name) %>%
-  summarise(y.position = max(immune_val))
-
-# T-test annotation table with adjusted pvals and y-position of the labels
-anno_df_wilcox_her2 <- metadata_long %>% 
-  dplyr::filter(stratification_id == "HER2") %>% 
-  # dplyr::filter(! plt_name %in% c("CD8 EM-like", "CD4 naive-like")) %>%
-  ggpubr::compare_means(data = .,
-                        formula = immune_val ~ stratification_val,
-                        method = "wilcox.test",
-                        group.by = "plt_name",
-                        p.adjust.method = "bonferroni",
-                        comparisons = my_comparisons) %>% 
-    dplyr::left_join(y_pos, by = "plt_name") %>% 
-    dplyr::mutate(y.position = if_else(group1 == "Fibrotic" & 
-                                       group2 == "HER2-", 
-                                     y.position * 0.7, 
-                                     if_else(group1 == "Fibrotic" &
-                                               group2 == "HER2+", 
-                                             y.position * 0.8,
-                                             y.position * 0.93)))
-bplt_her2 +
-  ggpubr::stat_pvalue_manual(data = anno_df_wilcox_her2,
-                             label = "p = {p.adj}",
-                             y.position = "y.position",
-                             size = 4) +
-    theme(strip.text = element_text(size = 12, face = "bold"))
-
-```
-
 

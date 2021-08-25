@@ -1,10 +1,18 @@
 ---
-title: "2- Australia Oropharyngeal Biological processing"
 author: "Marc Elosua-Bayes"
-date: "9/7/2020"
-output: html_document
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+params: 
+    sample_id: "Default!"
+title: "`r sprintf('2-Australia Oropharyngeal Biological processing %s', {params$sample_id})`"
 ---
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 knitr::opts_knit$set(root.dir = "../..")
@@ -19,95 +27,62 @@ We are going to use the data obtained from script *1-australis_oroph_processing.
 library(Seurat)
 library(dplyr)
 library(ggplot2)
-library(matchSCore2)
+library(cowplot)
 library(purrr)
-library(SPOTlight)
-source("misc/paths.R")
-source("utils/bin.r")
+library(DT)
+library(org.Hs.eg.db)
+library(GOstats)
+library(progeny)
+
+source(here::here("misc/paths.R"))
+source(here::here("utils/bin.r"))
+source(here::here("utils/bin.R"))
 ```
 
 ## Parameters
 Set common parameters for the entire document.
 ```{r}
 id_ls <- c("161429", "161430", "161431", "161432")
+sample <- params$sample_id
+sample <- "161429"
 ```
 
 ## Load data
 We are going to start by loading the data
 ```{r}
-st_ls <- readRDS(file = sprintf("%s/%s/processed_st_ls_oropharyngeal.RDS",
-                       an_oro, robj_dir))
-
-names(st_ls)
+sp_obj <- "{an_oro}/{robj_dir}/processed_sp_oropharyngeal_{sample}.RDS" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
 ```
-
 
 ## Go enrichment
 ### Marker genes
 Iterate over the spatial seurat objects, set Identities to the lowest resolution and save the marker genes.
 ```{r}
-markers_hn1 <- lapply(names(st_ls), function(nm) {
-  # print(nm)
-  st_se <- st_ls[[nm]]
-  Seurat::Idents(st_se) <- st_se@meta.data[, "SCT_snn_res.0.1"]
-  tmp_markers <- Seurat::FindAllMarkers(object = st_se,
-                                        assay = "SCT",
-                                        slot = "data",
-                                        only.pos = TRUE)
-  saveRDS(object = tmp_markers,
-          file = sprintf("%s/%s/markers_%s_res.0.1.RDS",
-                         an_oro, robj_dir, nm))
-})
-```
+Seurat::Idents(sp_obj) <- sp_obj@meta.data[, "SCT_snn_res.0.1"]
+markers_all <- Seurat::FindAllMarkers(object = sp_obj,
+                                      assay = "SCT",
+                                      slot = "data",
+                                      only.pos = TRUE)
 
-Load marker genes
-```{r}
-marker_paths <- list.files(path = sprintf("%s/%s", an_oro, robj_dir),
-           pattern = "markers_.*res.0.1.RDS",
-           full.names = TRUE)
-
-marker_nms <- stringr::str_split(string = marker_paths,
-                   pattern = "/|_",
-                   simplify = TRUE)[, 9]
-
-marker_ls <- lapply(marker_paths, function(path) readRDS(file = path))
-names(marker_ls) <- marker_nms
-
-# marker_ls[[1]] %>% filter(gene %in% c("CDKN2A", "TP53", "CCND1", "CDK4", "CDK6", "WNT1"))
+"{an_oro}/{robj_dir}/markers_{sample}_res.0.1.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  saveRDS(
+    object = tmp_markers,
+    file = .)
 ```
 
 Interactive table to look at marker genes
-#### 161429
 ```{r}
-library(DT)
-
-DT::datatable(data = marker_ls[["161429"]],
+DT::datatable(data = markers_all,
               filter = "top",
               options = list(pageLength = 20, autoWidth = TRUE))
 ```
 
-#### 161430
-```{r}
-DT::datatable(data = marker_ls[["161430"]],
-              filter = "top",
-              options = list(pageLength = 20, autoWidth = TRUE))
-```
 
-#### 161431
-```{r}
-DT::datatable(data = marker_ls[["161431"]],
-              filter = "top",
-              options = list(pageLength = 20, autoWidth = TRUE))
-```
-
-#### 161432
-```{r}
-DT::datatable(data = marker_ls[["161432"]],
-              filter = "top",
-              options = list(pageLength = 20, autoWidth = TRUE))
-```
-
-```{r eval = FALSE, echo = FALSE}
+```{r echo = FALSE}
 # Extracting the markers from each cluster
 # Function to pull the gene variable
 pull_col <- function(.x) {
@@ -135,14 +110,12 @@ names(unique_markers) <- names(marker_ls)
 ### Cluster annotation
 #### GO analysis
 For ALL the slices
-```{r eval = FALSE}
-library(org.Hs.eg.db)
-library(GOstats)
+```{r}
 DE_df <- lapply(names(marker_ls), function(nm) {
   # print(nm)
   # Extract objects of interest
   markers_st <- marker_ls[[nm]]
-  st_se <- st_ls[[nm]]
+  sp_obj <- st_ls[[nm]]
   
   tmp_df <- lapply(unique(markers_st$cluster), function(clust) {
     # Subset cluster of interest
@@ -153,7 +126,7 @@ DE_df <- lapply(names(marker_ls), function(nm) {
     
     go_clust <- gene_enrichment_GO(
       gene_de = gene_de,
-      gene_universe = stringr::str_to_upper(rownames(st_se)))
+      gene_universe = stringr::str_to_upper(rownames(sp_obj)))
     
     tmp <- summary(go_clust) %>%
       dplyr::filter(Size <= 300 & Size >=33 & Pvalue < 0.01 & Count >= 3) %>% 
@@ -169,191 +142,143 @@ DE_df <- lapply(names(marker_ls), function(nm) {
 }) %>% dplyr::bind_rows()
 
 # Save DE gene analysis
-saveRDS(object = DE_df,
-        file = sprintf("%s/%s/go_enrichment_all_res.0.1.RDS",
-                       an_oro, robj_dir, nm))
-
-DE_df <- DE_ls %>% dplyr::bind_rows()
+"{an_oro}/{robj_dir}/go_enrichment_all_res.0.1_{sample}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  saveRDS(
+    object = DE_df,
+    file = .)
 ```
 
 Load enrichment RDS files
 ```{r}
-DE_df <- readRDS(file = sprintf("%s/%s/go_enrichment_all_res.0.1.RDS",
-                                an_oro, robj_dir))
+# Save DE gene analysis
+DE_df <- "{an_oro}/{robj_dir}/go_enrichment_all_res.0.1_{sample}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
 ```
 
 ##### Visualization
 For all the slices
 ```{r}
-lapply(unique(DE_df$sample), function(sampl) {
-  # print(sampl)
-  tmp_de <- DE_df %>% dplyr::filter(sample == sampl)
-  plt_ls <- lapply(unique(as.character(tmp_de$cluster)), function(i) {
-    # print(i)
-    tmp_plt <- DE_df %>%
-      dplyr::filter(cluster == i) %>%
-      dplyr::arrange(desc(OddsRatio)) %>%
-      head(25) %>% 
-      ggplot(.) +
-        geom_point(aes(x = OddsRatio,
-                       y = reorder(Term, OddsRatio),
-                       size = -Pvalue,
-                       color = Pvalue)) +
-        scale_color_gradient(low = "green",
-                             high = "red") +
-        labs(title = sprintf("Sample: %s; Cluster: %s",
-                             sampl, i),
-             y = "")
-    # cowplot::save_plot(filename = sprintf("%s/%s/go_enrich_hn1_clust-%s.pdf",
-    # an_aussie, plt_dir, i),
-    #                    plot = tmp_plt)
-    })
-  
-  ggpubr::ggexport(plotlist = plt_ls, 
-                          filename = sprintf("%s/%s/go_enrich_%s_res.0.1.pdf",
-                                             an_oro, plt_dir, sampl),
-                          width = 10,
-                          height = 7)
-  return(plt_ls)
-})
+plt_ls <- lapply(unique(as.character(tmp_de$cluster)), function(i) {
+  # print(i)
+  tmp_plt <- DE_df %>%
+    dplyr::filter(cluster == i) %>%
+    dplyr::arrange(desc(OddsRatio)) %>%
+    head(25) %>% 
+    ggplot(.) +
+      geom_point(aes(x = OddsRatio,
+                     y = reorder(Term, OddsRatio),
+                     size = -Pvalue,
+                     color = Pvalue)) +
+      scale_color_gradient(low = "green",
+                           high = "red") +
+      labs(title = glue::glue("Sample: {sample}; Cluster: {i}"),
+           y = "")
+  # cowplot::save_plot(filename = sprintf("%s/%s/go_enrich_hn1_clust-%s.pdf",
+  # an_aussie, plt_dir, i),
+  #                    plot = tmp_plt)
+  })
+
+"{an_oro}/{plt_dir}/go_enrich_res.0.1_{sample}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  ggpubr::ggexport(
+    plotlist = plt_ls, 
+    filename = .,
+    width = 10,
+    height = 7)
 ```
 
 ### PROGENy
 PROGENy (Pathway RespOnsive GENes) estimates the activity of relevant signaling pathways based on consensus gene signatures obtained from perturbation experiments, in other words, the footprint of the pathway on gene expression
 We compute PROGENy pathway activity scores on the scRNA-seq data, and we then characterice the different clusters based on these scores.
 ```{r}
-library(progeny)
+## We compute the Progeny activity scores and add them to our Seurat object
+## as a new assay called Progeny. 
+sp_obj <- progeny::progeny(
+  sp_obj,
+  scale = FALSE,
+  organism = "Human",
+  top = 500,
+  perm = 1,
+  assay_name = "Spatial",
+  return_assay = TRUE)
 
-
-for (nm in names(st_ls)) {
-  # st_se <- st_ls[[nm]]
-  ## We compute the Progeny activity scores and add them to our Seurat object
-  ## as a new assay called Progeny. 
-  st_ls[[nm]] <- progeny::progeny(st_ls[[nm]],
-                   scale = FALSE,
-                   organism = "Mouse",
-                   top = 500,
-                   perm = 1,
-                   assay_name = "Spatial",
-                   return_assay = TRUE)
-  
-  ## We can now directly apply Seurat functions in our Progeny scores. 
-  ## For instance, we scale the pathway activity scores. 
-  st_ls[[nm]] <- Seurat::ScaleData(st_ls[[nm]], assay = "progeny") 
-}
-
+## We can now directly apply Seurat functions in our Progeny scores. 
+## For instance, we scale the pathway activity scores. 
+sp_obj <- Seurat::ScaleData(sp_obj, assay = "progeny") 
 ```
 
 Next we create a data frame with the specification of the spot id that belong to each cluster to match with the Progeny scores.
 ```{r}
-progeny_ls <- lapply(names(st_ls), function(nm) {
-  st_se <- st_ls[[nm]]
-  
-  ## We transform Progeny scores into a data frame to better handling the results
-  progeny_scores_df <- 
-      as.data.frame(t(GetAssayData(st_se, slot = "scale.data", 
-          assay = "progeny"))) %>%
-      tibble::rownames_to_column("Cell") %>%
-      tidyr::gather(Pathway, Activity, -Cell)
+## We transform Progeny scores into a data frame to better handling the results
+progeny_scores_df <- 
+    as.data.frame(t(GetAssayData(sp_obj, slot = "scale.data", 
+        assay = "progeny"))) %>%
+    tibble::rownames_to_column("Cell") %>%
+    tidyr::gather(Pathway, Activity, -Cell)
 
-  Seurat::Idents(st_se) <- st_se@meta.data[, "SCT_snn_res.0.1"]
-  ## We create a data frame with the specification of the spot id that belong to 
-  ## each cluster to match with the Progeny scores.
-  CellsClusters <- data.frame(Cell = names(Idents(st_se)), 
-      CellType = as.character(Idents(st_se)),
-      stringsAsFactors = FALSE)
-  
-  ## We match Progeny scores with the cell clusters.
-  progeny_scores_df <- inner_join(progeny_scores_df, CellsClusters, by = "Cell")
-  
-  ## We summarize the Progeny scores by cellpopulation
-  summarized_progeny_scores <- progeny_scores_df %>% 
-      group_by(Pathway, CellType) %>%
-      summarise(avg = mean(Activity), std = sd(Activity))
-  return(summarized_progeny_scores)
-})
+Seurat::Idents(sp_obj) <- sp_obj@meta.data[, "SCT_snn_res.0.1"]
+## We create a data frame with the specification of the spot id that belong to 
+## each cluster to match with the Progeny scores.
+CellsClusters <- data.frame(Cell = names(Idents(sp_obj)), 
+    CellType = as.character(Idents(sp_obj)),
+    stringsAsFactors = FALSE)
 
-names(progeny_ls) <- names(st_ls)
+## We match Progeny scores with the cell clusters.
+progeny_scores_df <- inner_join(progeny_scores_df, CellsClusters, by = "Cell")
+
+## We summarize the Progeny scores by cellpopulation
+summarized_progeny_scores <- progeny_scores_df %>% 
+    group_by(Pathway, CellType) %>%
+    summarise(avg = mean(Activity), std = sd(Activity))
 ```
 
 Lastly we want to visualize the pathways scores in a heatmap
 ```{r}
-lapply(names(progeny_ls), function(nm) {
-  summarized_progeny_scores <- progeny_ls[[nm]]
-  
-  ## We prepare the data for the plot
-  summarized_progeny_scores_df <- summarized_progeny_scores %>%
-      dplyr::select(-std) %>%   
-      tidyr::spread(Pathway, avg) %>%
-      data.frame(row.names = 1, check.names = FALSE, stringsAsFactors = FALSE) 
-  
-  paletteLength = 100
-  myColor = colorRampPalette(c("Darkblue", "white","red"))(paletteLength)
-  
-  progenyBreaks <- c(seq(min(summarized_progeny_scores_df), 0, 
-                        length.out = ceiling(paletteLength / 2) + 1),
-                    seq(max(summarized_progeny_scores_df) / paletteLength, 
-                        max(summarized_progeny_scores_df), 
-                        length.out = floor(paletteLength / 2)))
-  
-  progeny_hmap <- pheatmap::pheatmap(mat = t(summarized_progeny_scores_df[, -1]),
-                                     fontsize = 14,
-                                     fontsize_row = 10,
-                                     color = myColor,
-                                     breaks = progenyBreaks,
-                                     main = "PROGENy (500)",
-                                     angle_col = 45,
-                                     treeheight_col = 0,
-                                     border_color = NA,
-                                     filename = sprintf("%s/%s/progeny_hmap_%s.png",
-                                                        an_oro, plt_dir, nm))
-  
-  progeny_hmap <- pheatmap::pheatmap(mat = t(summarized_progeny_scores_df[, -1]),
-                                   fontsize = 14,
-                                   fontsize_row = 10,
-                                   color = myColor,
-                                   breaks = progenyBreaks,
-                                   main = "PROGENy (500)",
-                                   angle_col = 45,
-                                   treeheight_col = 0,
-                                   border_color = NA)
-})
+## We prepare the data for the plot
+summarized_progeny_scores_df <- summarized_progeny_scores %>%
+    dplyr::select(-std) %>%   
+    tidyr::spread(Pathway, avg) %>%
+    data.frame(row.names = 1, check.names = FALSE, stringsAsFactors = FALSE) 
+
+paletteLength = 100
+myColor = colorRampPalette(c("Darkblue", "white","red"))(paletteLength)
+
+progenyBreaks <- c(seq(min(summarized_progeny_scores_df), 0, 
+                      length.out = ceiling(paletteLength / 2) + 1),
+                  seq(max(summarized_progeny_scores_df) / paletteLength, 
+                      max(summarized_progeny_scores_df), 
+                      length.out = floor(paletteLength / 2)))
+
+"{an_oro}/{plt_dir}/progeny_hmap_{sample}.png" %>%
+  glue::glue() %>%
+  here::here() %>%
+  pheatmap::pheatmap(
+    mat = t(summarized_progeny_scores_df[, -1]),
+    fontsize = 14,
+    fontsize_row = 10,
+    color = myColor,
+    breaks = progenyBreaks,
+    main = "PROGENy (500)",
+    angle_col = 45,
+    treeheight_col = 0,
+    border_color = NA,
+    filename = .)
+
+progeny_hmap <- pheatmap::pheatmap(mat = t(summarized_progeny_scores_df[, -1]),
+                                 fontsize = 14,
+                                 fontsize_row = 10,
+                                 color = myColor,
+                                 breaks = progenyBreaks,
+                                 main = "PROGENy (500)",
+                                 angle_col = 45,
+                                 treeheight_col = 0,
+                                 border_color = NA)
 ```
-
-**Sample 161429**
-```{r}
-Seurat::SpatialDimPlot(object = st_ls[["161429"]],
-                       group.by = "SCT_snn_res.0.1")
-```
-
-![PROGENy 161429](2020-06-04/plots_2020-06-04/progeny_hmap_161429.png)
-
-We can see that cluster 0 has the JAK-STAT, NFkB and TNFa pathways activated while 1 and 2 follow an inverse relation. Cluster 3 shows weak relation to any of the pathways.
-
-**Sample 161430**
-```{r}
-Seurat::SpatialDimPlot(object = st_ls[["161430"]],
-                       group.by = "SCT_snn_res.0.1")
-```
-
-![PROGENy 161430](2020-06-04/plots_2020-06-04/progeny_hmap_161430.png)
-We can see that cluster 2 has the JAK-STAT, NFkB and TNFa pathways activated while 0 has all of them underexpressed. Cluster 1 shows weak relation to all of the pathways.
-
-**Sample 161431**
-```{r}
-Seurat::SpatialDimPlot(object = st_ls[["161431"]],
-                       group.by = "SCT_snn_res.0.1")
-```
-![PROGENy 161431](2020-06-04/plots_2020-06-04/progeny_hmap_161431.png)
-We can see that cluster 1 has the EGFR while lusters 0 and 2 have it underexpressed. Weak associations are observed with the other pathways.
-
-**Sample 161432**
-```{r}
-Seurat::SpatialDimPlot(object = st_ls[["161432"]],
-                       group.by = "SCT_snn_res.0.1")
-```
-![PROGENy 161432](2020-06-04/plots_2020-06-04/progeny_hmap_161432.png)
-Cluster 0 and 1 follow inverse patterns but both present very low scores, <0.2.
 
 ## Session Info
 ```{r}

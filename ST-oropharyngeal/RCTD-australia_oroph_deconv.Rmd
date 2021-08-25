@@ -1,0 +1,284 @@
+---
+author: "Marc Elosua-Bayes"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+params: 
+    sample_id: "Default!"
+    clust_vr: "lv1_annot"
+title: "`r sprintf('RCTD-10x_breast_immune_reference %s', {params$sample_id})`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width = "100%", fig.align='center', 
+                      message = FALSE, warning = FALSE)
+options(width = 1200)
+```
+
+## Introduction
+In this R markdo9wn document we will map immune cells onto the Oropharyngeal cancer tissue using the RCTD  tool.
+Robust Cell Type Deconvolution is developed by Dylan M. Cable from Rafa Irizarry's lab
+
+RCTD original paper can be found [here](https://doi.org/10.1038/s41587-021-00830-w) and the GitHub repo [here](https://github.com/dmcable/RCTD).
+
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(Matrix)
+# devtools::install_github("dmcable/RCTD", build_vignettes = TRUE)
+library(RCTD)
+source(here::here("utils/bin.r"))
+```
+
+## Paths
+```{r}
+source(here::here("misc/paths.R"))
+
+"{an_breast_10x}/{robj_dir}" %>%
+  glue::glue() %>%
+  here::here() %>%
+  dir.create(
+    path = ,
+    showWarnings = FALSE,
+    recursive = TRUE)
+
+"{an_breast_10x}/{plt_dir}" %>%
+  glue::glue() %>%
+  here::here() %>%
+  dir.create(
+    path = ,
+    showWarnings = FALSE,
+    recursive = TRUE)
+```
+
+## Parameters
+```{r}
+set.seed(1243)
+
+sample_id <- params$sample_id
+# sample_id <- "161429"
+# sample_id <- "161430"
+# clust_vr <- params$clust_vr
+clust_vr <- "lv1_annot"
+# clust_vr <- "lv2_annot"
+```
+
+RCTD paths
+```{r}
+refdir <- "{an_breast_10x}/{robj_dir}/RCTD_data/reference" %>%
+  glue::glue() %>%
+  here::here()
+
+dir.create(path = refdir, showWarnings = FALSE, recursive = TRUE)
+
+stdir <- "{an_oro}/{robj_dir}/{sample_id}/RCTD_data/spatial" %>%
+  glue::glue() %>%
+  here::here()
+
+dir.create(path = stdir, showWarnings = FALSE, recursive = TRUE)
+```
+
+## Load data
+
+We are going to start by loading the data from the previosu script *1-australis_oroph_processing.Rmd*.
+```{r eval = FALSE}
+### Spatial oropharyngeal cancer
+se_obj <- "{an_oro}/{robj_dir}/processed_sp_oropharyngeal_{sample_id}.RDS" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
+```
+
+Subset ICA to just use cells from the melanoma subset since we have a good representation of cells for each cluster from this dataset.
+```{r eval = FALSE}
+ica_melanoma2_path <- "{an_breast_10x}/{robj_dir}/ica_melanoma2.rds" %>%
+  glue::glue() %>%
+  here::here()
+
+if (file.exists(ica_melanoma2_path)) {
+  
+  ica_sub <- readRDS(file = ica_melanoma2_path)
+} else {
+  # ica_se <- readRDS("/scratch/devel/pnieto/TIL_Atlas/TICA/output/integrated_renamed_filtered.rds")
+  ica_se <- "data/immune_reference/integrated_clustered_complete.rds" %>%
+    here::here() %>%
+    readRDS(.)
+  ### Immune reference atlas
+  ica_sub <- subset(ica_se, subset = source == "melanoma2")
+  rm(ica_se)
+  
+  saveRDS(object = ica_sub, file = ica_melanoma2_path)
+}
+
+table(ica_sub@meta.data$lv1_annot)
+table(ica_sub@meta.data$lv2_annot)
+```
+
+Remove MAST cells from the training set
+```{r eval = FALSE}
+ica_sub <- subset(ica_sub, subset = lv1_annot != "Mast cells")
+# Create Seurat object with filtered gene matrix after removing Mast cells
+ica_sub <- Seurat::CreateSeuratObject(
+  counts = ica_sub@assays$RNA@counts[
+    sparseMatrixStats::rowSums2(ica_sub@assays$RNA@counts) != 0, ],
+  meta.data = ica_sub@meta.data)
+```
+
+Join proliferatiing cell types to get a proliferation signature
+```{r eval = FALSE}
+prolif_vec <- c("T cells proliferative", "Macrophages and monocytes proliferative",
+                "B cells proliferative", "Macrophages proliferative")
+
+ica_sub[["cell_type_mod"]] <- dplyr::if_else(
+  ica_sub@meta.data[, clust_vr] %in% prolif_vec,
+  "Proliferation", as.character(ica_sub@meta.data[, clust_vr]))
+
+```
+
+## Prepare data for RCTD
+### Reference scRNAseq
+We are going to follow the vignette steps.
+
+In order to run RCTD, the first step is to process the single cell reference. Create a folder in ‘data/Reference’ e.g. ‘data/Reference/Vignette’ containing the following three files:
+1. meta_data.csv: a CSV file (with 3 columns, with headers "barcode", "cluster", and "nUMI") containing the numeric cluster assignment for each cell. <br/>
+2. cell_type_dict.csv: a CSV file (with 2 columns, with headers "Cluster" and "Name") containing the mapping between numeric cluster ID and cluster name. If you want a cluster to be filtered out of the single cell reference, you can leave the cluster name blank. The cell types must not contain the character ‘/’ or ‘-’. <br/>
+3. dge.csv: a Digital Gene Expression (DGE) (barcodes by gene counts) CSV file in the standard 10x format. <br/>
+We use the dgeToSeurat function:
+
+```{r eval = FALSE}
+scRCTD_structure <- function(sc_obj, clust_vr) {
+  
+  sc_obj[["Name"]] = sc_obj@meta.data[, clust_vr]
+  
+  # Cell type dictionary between cluster and cell-type
+  ct <- unique(as.character(sc_obj@meta.data[, clust_vr]))
+  df_ct <- data.frame("Cluster" = 1:length(ct),
+                      "Name" = ct)
+  
+  # 
+  metadata <- sc_obj@meta.data %>%
+    # Rownames to columns must be before left join since after it the rownames are erased
+    tibble::rownames_to_column("barcode") %>%
+    dplyr::left_join(df_ct, by = c("Name" = "Name")) %>%
+    # Change names to “barcode”, “cluster”, “nUMI”
+    mutate(
+      cluster = Cluster,
+      nUMI = nCount_RNA
+      ) %>%
+    dplyr::select(barcode, cluster, nUMI)
+  
+  expr_mtrx <- sc_obj@assays$RNA@counts
+  
+  return(list("meta_data" = metadata,
+              "cell_type_dict" = df_ct,
+              "dge" = expr_mtrx))
+}
+```
+
+Save data to reference directory
+```{r eval = FALSE}
+sc_ls <- scRCTD_structure(sc_obj = ica_sub, clust_vr = "cell_type_mod")
+
+"{refdir}/meta_data.csv" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readr::write_csv(x = sc_ls[[1]], file = .)
+
+"{refdir}/cell_type_dict.csv" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readr::write_csv(x = sc_ls[[2]], file = .)
+
+dge_path <- "{refdir}/dge.csv" %>%
+  glue::glue() %>%
+  here::here()
+
+sc_ls[[3]] %>%
+  data.frame() %>%
+  tibble::rownames_to_column("gene") %>%
+  readr::write_csv(x = .,
+                   file = dge_path,
+                   col_names = TRUE)
+
+```
+
+**Of note, here go to analysis/tool_benchmarking/RCTD_data/reference/dge.csv and remove the column name gene by "". If you don't it will detect the column as a gene and RCTD::dgeToSeurat won't be able to load the data.**
+
+### Reference ST
+Next, put the SpatialRNA data in your ‘data/SpatialRNA’ directory (here ‘data/SpatialRNA/Vignette’). This needs to contain:
+1. BeadLocationsForR.csv: a CSV file (with 3 columns, with headers “barcodes”, “xcoord”, and “ycoord”) containing the spatial locations of the pixels. <br/>
+2. MappedDGEForR.csv: a DGE (gene counts by barcodes) CSV file. Represents raw counts at each pixel. <br/>
+
+```{r eval = FALSE}
+dgef_path <- "{stdir}/MappedDGEForR.csv" %>%
+  glue::glue() %>%
+  here::here()
+
+se_obj@assays$Spatial@counts %>%
+  data.frame() %>%
+  tibble::rownames_to_column("gene") %>% 
+  dplyr::select(gene, everything()) %>% 
+  readr::write_csv(x = .,
+                   file = dgef_path,
+                   col_names = TRUE)
+
+coord_path <- "{stdir}/BeadLocationsForR.csv" %>%
+  glue::glue() %>%
+  here::here()
+
+# Extract spatial coordinates
+image_id <- names(se_obj@images)
+se_obj@images[[image_id]]@coordinates %>%
+  dplyr::select(imagecol, imagerow) %>% 
+  tibble::rownames_to_column("barcodes") %>%
+  dplyr::rename(xcoord = imagecol, ycoord = imagerow) %>%
+  readr::write_csv(
+    x = .,
+    file = coord_path)
+
+```
+
+## RCTD deconvolution
+### Read data in RCTD
+Read data in RCTD format
+```{r}
+reference <- RCTD::dgeToSeurat(refdir = refdir)
+puck <- RCTD::read.SpatialRNA(datadir = stdir)
+```
+
+### Creating and running RCTD
+We are now ready to create an RCTD object using the create.RCTD function. We simply need to pass in the SpatialRNA and scRNA-seq objects. There are several configuration options that can be set with this function:
+```{r}
+myRCTD <- RCTD::create.RCTD(spatialRNA = puck,
+                            reference = reference,
+                            max_cores = 1,
+                            CELL_MIN = 18)
+```
+
+Now, we are ready to run RCTD, using the run.RCTD function. This function is equivalent to sequentially running the functions fitBulk, choose_sigma_c, and fitPixels. The doublet_mode argument sets whether RCTD will be run in ‘doublet mode’ (at most 1-2 cell types per pixel) or ‘full mode’ (no restrictions on number of cell types).
+```{r}
+myRCTD <- RCTD::run.RCTD(RCTD = myRCTD,
+                         doublet_mode = FALSE)
+```
+
+Save RCTD resulting
+```{r}
+"{an_oro}/{robj_dir}/RCTDobj_{sample_id}_{clust_vr}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  saveRDS(object = myRCTD, file = .)
+```
+
+
+## Session Info
+```{r}
+sessionInfo()
+```
+

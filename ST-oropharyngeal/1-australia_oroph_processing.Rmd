@@ -1,12 +1,19 @@
 ---
 title: "1- Australia oropharingeal cancer preprocessing"
 author: "Marc Elosua-Bayes"
-date: "9/4/2020"
-output: html_document
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    df_print: paged
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, out.width = "100%", fig.align='center', 
+                      message = FALSE, warning = FALSE)
+options(width = 1200)
 ```
 
 ## Introduction
@@ -27,22 +34,29 @@ Frozen tissue samples were processed using the Visium Spatial Gene Expression sl
 ```{r}
 library(Seurat)
 library(dplyr)
-library(matchSCore2)
-library(purrr)
-library(SPOTlight)
-source("misc/paths.R")
-source("utils/bin.r")
+library(cowplot)
+source(here::here("misc/paths.R"))
+source(here::here("utils/bin.R"))
+source(here::here("utils/bin.r"))
 ```
 
 ## Create directory structure
 ```{r}
-dir.create(path = sprintf("%s/%s", an_oro, robj_dir), 
-           showWarnings = FALSE, 
-           recursive = TRUE)
+"{an_oro}/{robj_dir}" %>%
+  glue::glue() %>%
+  here::here() %>%
+  dir.create(
+    path = ,
+    showWarnings = FALSE,
+    recursive = TRUE)
 
-dir.create(path = sprintf("%s/%s", an_oro, plt_dir),
-           showWarnings = FALSE, 
-           recursive = TRUE)
+"{an_oro}/{plt_dir}" %>%
+  glue::glue() %>%
+  here::here() %>%
+  dir.create(
+    path = ,
+    showWarnings = FALSE,
+    recursive = TRUE)
 ```
 
 ## Parameters
@@ -56,7 +70,7 @@ We are going to start by loading the data
 ```{r}
 st_ls <- lapply(id_ls, function(id) {
   print(id)
-  tmp_se <- Seurat::Load10X_Spatial(data.dir = sprintf("data/australia_hn/%s/", id),
+  tmp_se <- Seurat::Load10X_Spatial(data.dir = here::here(sprintf("data/australia_hn/%s/", id)),
                                   filename = sprintf("%s_filtered_feature_bc_matrix.h5", id),
                                   slice = id)
   return(tmp_se)
@@ -65,7 +79,17 @@ names(st_ls) <- id_ls
 ```
 
 ## QC
-We start by looking at the number of reads, genes, and mitochondrial per spot to check how this tissue looks.
+1st thing we do is remove empty gene
+```{r}
+for (id in names(st_ls)) {
+  table(rowSums(as.matrix(st_ls[[id]]@assays$Spatial@counts)) == 0)
+  
+  keep_genes <- rowSums(as.matrix(st_ls[[id]]@assays$Spatial@counts)) != 0
+  st_ls[[id]] <- st_ls[[id]][keep_genes, ]
+}
+```
+
+Then we look at the number of reads, genes, and mitochondrial per spot to check how this tissue looks.
 First we add the mitochondrial and ribosomal percentage within each spot.
 ```{r}
 for (id in names(st_ls)) {
@@ -94,11 +118,14 @@ lapply(names(st_ls), function(id) {
                           pctmt = "percent.mt",
                           pctrp = "percent.rp")
   
-  cowplot::save_plot(filename = sprintf("%s/%s/QC_histogram_%s.pdf",
-                                        an_oro, plt_dir, id),
-                     plot = hist_qc,
-                     base_height = 9,
-                     base_width = 16)
+  "{an_oro}/{plt_dir}/QC_histogram_{id}.pdf" %>%
+    glue::glue() %>%
+    here::here() %>%
+    cowplot::save_plot(
+      filename = .,
+      plot = hist_qc,
+      base_height = 9,
+      base_width = 16)
   return(hist_qc)
 })
 ```
@@ -116,12 +143,15 @@ lapply(names(st_ls), function(id) {
                                                    "percent.mt",
                                                    "percent.rp"))
   
-  cowplot::save_plot(filename = sprintf("%s/%s/QC_spatial_%s.pdf",
-                                      an_oro, plt_dir, id),
-                   plot = sp_qc,
-                   base_height = 12,
-                   base_width = 12)
-  
+  "{an_oro}/{plt_dir}/QC_spatial_{id}.pdf" %>%
+    glue::glue() %>%
+    here::here() %>%
+    cowplot::save_plot(
+      filename = .,
+      plot = sp_qc,
+      base_height = 12,
+      base_width = 12)
+
   return(sp_qc)
 })
 ```
@@ -146,11 +176,14 @@ lapply(names(st_ls), function(id) {
                                                    "percent.mt",
                                                    "percent.rp"))
   
-  cowplot::save_plot(filename = sprintf("%s/%s/QC_spatial_subset_%s.pdf",
-                                      an_oro, plt_dir, id),
-                   plot = sp_qc,
-                   base_height = 12,
-                   base_width = 12)
+    "{an_oro}/{plt_dir}/QC_spatial_subset_{id}.pdf" %>%
+    glue::glue() %>%
+    here::here() %>%
+    cowplot::save_plot(
+      filename = .,
+      plot = sp_qc,
+      base_height = 12,
+      base_width = 12)
   
   return(sp_qc)
 })
@@ -159,7 +192,7 @@ lapply(names(st_ls), function(id) {
 161430 and 161431 appear to have regions with very low reads so we'll keep an eye on these 2 slices specially in the downstream analysis.
 
 ## Normalization
-Once we've subseted the data to remove low quality spots we will scale, normalize and cluster the data.
+Once we've subset the data to remove low quality spots we will scale, normalize and cluster the data.
 ```{r}
 for (id in names(st_ls)) {
   print(id)
@@ -169,16 +202,21 @@ for (id in names(st_ls)) {
   # Dimensionality reduction and clustering
   st_ls[[id]] <- Seurat::RunPCA(st_ls[[id]], assay = "SCT", verbose = TRUE)
   st_ls[[id]] <- Seurat::FindNeighbors(st_ls[[id]], reduction = "pca", dims = 1:30)
-  st_ls[[id]] <- Seurat::FindClusters(st_ls[[id]], verbose = TRUE, resolution = c(0.1, 0.25, 0.5, 0.75, 1))
+  st_ls[[id]] <- Seurat::FindClusters(st_ls[[id]], verbose = TRUE, resolution = c(0.09, 0.1, 0.25, 0.5, 0.75, 1))
   st_ls[[id]] <- Seurat::RunUMAP(st_ls[[id]], reduction = "pca", dims = 1:30)
 }
 ```
 
 Save processed dataset
 ```{r}
-saveRDS(object = st_ls,
-        file = sprintf("%s/%s/processed_st_ls_oropharyngeal.RDS",
-                       an_oro, robj_dir))
+for (id in names(st_ls)) {
+  "{an_oro}/{robj_dir}/processed_sp_oropharyngeal_{id}.RDS" %>%
+    glue::glue() %>%
+    here::here() %>%
+    saveRDS(
+      object = st_ls[[id]],
+      file = .)
+}
 ```
 
 ### Cluster visualization
@@ -192,12 +230,15 @@ lapply(names(st_ls), function(id) {
                                                    "SCT_snn_res.0.25")) +
     geom_point(color = NA)
   
-  cowplot::save_plot(filename = sprintf("%s/%s/Cluster_spatial_%s.pdf",
-                                      an_oro, plt_dir, id),
-                   plot = sp_clust,
-                   base_height = 9,
-                   base_width = 15)
-  
+  "{an_oro}/{plt_dir}/Cluster_spatial_{id}.pdf" %>%
+    glue::glue() %>%
+    here::here() %>%
+    cowplot::save_plot(
+      filename = .,
+      plot = sp_clust,
+      base_height = 9,
+      base_width = 15)
+
   return(sp_clust)
 })
 ```

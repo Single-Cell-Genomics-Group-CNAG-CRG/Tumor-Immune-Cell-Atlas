@@ -1,0 +1,596 @@
+---
+author: "Marc Elosua-Bayes"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+params: 
+    sample_id: "Default!"
+    clust_vr: "Default!"
+title: "`r sprintf('4-Australia oropharyngeal cancer stratification %s', {params$sample_id})`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width = "100%", fig.align='center', 
+                      message = FALSE, warning = FALSE)
+options(width = 1200)
+```
+
+## Introduction
+In this Rmarkdown document we are going to stratify the tissue and analyze the differences in proportions and prevalence between the stratified regions.
+Regions have been obtained by clustering in Seurat and following a pathologist's annotation.
+
+## Libraries
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(SPOTlight)
+source(here::here("misc/paths.R"))
+source(here::here("utils/bin.r"))
+```
+
+## Parameters
+```{r}
+set.seed(1243)
+
+sample_id <- params$sample_id
+# sample_id <- "161429"
+# sample_id <- "161430"
+clust_vr <- params$clust_vr
+# clust_vr <- "lv2_annot"
+# clust_vr <- "lv1_annot"
+
+trn <- "melanoma"
+cl_n <- 100
+hvg <- 3000
+ntop <- NULL
+transf <- "uv"
+method <- "nsNMF"
+min_cont <- 0
+
+if (is.null(ntop)) {
+  spotlight_id <- glue::glue("trn-{trn}_cln-{cl_n}_hvg-{hvg}_ntop-NULL_transf-{transf}_method-{method}_mincont-{min_cont}")
+} else {
+  spotlight_id <- glue::glue("trn-{trn}_cln-{cl_n}_hvg-{hvg}_ntop-{ntop}_transf-{transf}_method-{method}_mincont-{min_cont}")
+}
+```
+
+```{r}
+if (clust_vr == "lv2_annot") {
+  ct_interest <- c("Plasma.B cells", "T.regs", "T.helper.Th17",
+                 "Proliferation", "CD8.exhausted",
+                 "CD8.cytotoxic", "NK", "Macrophages.SPP1", "TAMs.C1QC")
+} else if (clust_vr == "lv1_annot") {
+  ct_interest_dict <- list()
+  
+  ct_interest_dict[["161429"]] <- list(
+    c("B cells", "Plasma B cells", "T cells regulatory",
+      "CD8 terminally exhausted", "Macrophages SPP1", "TAMs C1QC",
+      "cDC", "Proliferation"),
+    c(4, 2))
+  
+  ct_interest_dict[["161430"]] <- list(
+    c("Plasma B cells", "T cells regulatory", "CD8 pre-exhausted",
+      "Macrophages SPP1", "TAMs C1QC", "CD8 cytotoxic",
+      "Proliferation", "CD4 naive-memory"),
+    c(3, 2))
+}
+```
+
+## Load data
+We are going to start by loading the data from the previous scripts *1-australis_oroph_processing.Rmd* and *3-australia_oroph_deconv.Rmd*.
+```{r}
+se_obj <- "{an_oro}/{robj_dir}/processed_sp_oropharyngeal_{sample_id}.RDS" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
+
+decon_mtrx_ls <- "{an_oro}/{robj_dir}/decon_mtrx_atlas_{sample_id}_{spotlight_id}_{clust_vr}.rds" %>%
+  glue::glue() %>%
+  here::here() %>%
+  readRDS(file = .)
+```
+
+Create a name/color dataframe
+```{r}
+# source(here::here("misc/col_df_scrpt.R"))
+# source(here::here("misc/col_df_scrpt2.R"))
+col_df <- readRDS(here::here("misc/col_df.rds"))
+```
+
+Change names to original ones and reorder according to Paula
+```{r}
+decon_mtrx <- decon_mtrx_ls[[2]]
+decon_mtrx <- decon_mtrx[, colnames(decon_mtrx) != "res_ss"]
+
+# Set as 0 cell types predicted to be under 3 % of the spot
+decon_mtrx[decon_mtrx < 0.03] <- 0
+
+new_colnames <- data.frame(ct_name = colnames(decon_mtrx), stringsAsFactors = FALSE) %>%
+  dplyr::left_join(col_df, by = "ct_name") %>%
+  dplyr::pull(plt_name)
+
+colnames(decon_mtrx) <- new_colnames
+```
+
+Set paula order sub for subsequent use
+```{r}
+ct <- colnames(decon_mtrx)[!colnames(decon_mtrx) %in% "res_ss"]
+```
+
+## Stratify tissue
+Add deconvolution matrix to Seurat object metadata
+```{r}
+se_obj@meta.data <- cbind(se_obj@meta.data, round(decon_mtrx, 3))
+```
+
+Stratify the tissue:
+```{r}
+if (sample_id == "161429") {
+  se_obj@meta.data[, "Stratification"] <- se_obj@meta.data[, "SCT_snn_res.0.1"]
+} else if (sample_id == "161430") {
+  se_obj@meta.data[, "Stratification"] <- se_obj@meta.data[, "SCT_snn_res.0.09"]
+}
+```
+
+Format the data into long format
+```{r}
+metadata_long <- se_obj@meta.data %>% 
+  tidyr::pivot_longer(cols = all_of(ct),
+                      names_to = "immune_key",
+                      values_to = "immune_val") %>%
+  dplyr::left_join(col_df,
+                   by = c("immune_key" = "ct_name")) %>%
+  dplyr::mutate(immune_val = dplyr::if_else(immune_val > 0.001, immune_val, 0))
+
+```
+
+### Visualization
+#### BoxPlots
+Box plot of cell type proportion between stratified regions showing the unadjusted ANOVA Pvalue
+```{r}
+# https://stackoverflow.com/questions/28436855/change-the-number-of-breaks-using-facet-grid-in-ggplot2
+# defining the breaks function, 
+# s is the scaling factor (cf. multiplicative expand)
+equal_breaks <- function(n = 3, s = 0.05, ...){
+  function(x){
+    # rescaling
+    d <- s * diff(range(x)) / (1 + 2 * s)
+    round(seq(min(x) + d, max(x) - d, length = n), 2)
+    }
+}
+
+# find cell types that are expressed in at least 1 spot
+keep_ct <- metadata_long %>%
+  dplyr::group_by(immune_key) %>%
+  dplyr::summarise(prop_sum = sum(immune_val)) %>% 
+  dplyr::filter(prop_sum > 0) %>%
+  dplyr::pull(immune_key)
+
+# Plot boxplot
+bplt_tmp <- metadata_long %>%
+  dplyr::filter(immune_key %in% keep_ct) %>%
+  dplyr::mutate(
+    immune_key = stringr::str_wrap(string = immune_key,
+                                   width = 20)) %>%
+  # dplyr::filter(! plt_name %in% c("CD8 EM-like", "CD4 naive-like")) %>%
+  ggpubr::ggboxplot(data = .,
+                    x = "Stratification",
+                    y = "immune_val",
+                    facet.by = "immune_key",
+                    color = "Stratification",
+                    fill = "Stratification",
+                    add = "jitter",
+                    scales = "free",
+                    repel = TRUE,
+                    outlier.shape = NA,
+                    alpha = 0.6,
+                    palette = c("#E41A1C", "#4DAF4A", "#377EB8", "#984EA3") # Set1 adaptation
+                    ) +
+  # Set 3 breaks
+  ggplot2::scale_y_continuous(
+    # Add padding on top
+    # expand = ggplot2::expansion(mult = c(0, 0.1)),
+    breaks = equal_breaks(n = 3, s = 0.05),
+    expand = c(0.05, 0),
+    labels = function(x) sapply(x, FUN = function(i) format(x = i, nsmall = 0))) +
+  ggplot2::theme(
+    strip.text = ggplot2::element_text(size = 18, face = "bold"),
+    axis.text.y = ggplot2::element_text(size = 16),
+    axis.text.x = ggplot2::element_text(size = 12),
+    legend.text = ggplot2::element_text(size = 18),
+    strip.background = ggplot2::element_blank()) +
+  ggplot2::labs(x = "Stratification",
+       y = "Proportion",
+       color = "Regions",
+       fill = "Regions")
+  
+## Add P values
+bplt_tmp <- bplt_tmp +
+  ggpubr::stat_compare_means(method = "anova", size = 6)
+
+"{an_oro}/{plt_dir}/strat_bplot_oro_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = bplt_tmp,
+    base_height = 25,
+    base_width = 25)
+```
+
+Box plot of cell type proportion of interest between stratified regions showing the unadjusted ANOVA Pvalue
+```{r fig.width=25, fig.height=25}
+if (clust_vr == "lv1_annot") {
+  # Keep cell types of interest
+  keep_ct <- ct_interest_dict[[sample_id]][[1]]
+} else if (clust_vr == "lv2_annot") {
+  keep_ct <- ct
+}
+
+# Plot boxplot
+bplt_tmp2 <- metadata_long %>%
+  dplyr::filter(immune_key %in% keep_ct) %>%
+  dplyr::mutate(
+    immune_key = stringr::str_wrap(string = immune_key,
+                                   width = 25)) %>%
+  # dplyr::filter(! plt_name %in% c("CD8 EM-like", "CD4 naive-like")) %>%
+  ggpubr::ggboxplot(data = .,
+                    x = "Stratification",
+                    y = "immune_val",
+                    facet.by = "immune_key",
+                    color = "Stratification",
+                    fill = "Stratification",
+                    add = "jitter",
+                    scales = "free",
+                    repel = TRUE,
+                    outlier.shape = NA,
+                    alpha = 0.6,
+                    palette = c("#E41A1C", "#4DAF4A", "#377EB8", "#984EA3"),  # Set1 adaptation
+                    ncol = ct_interest_dict[[sample_id]][[2]][[2]]
+                    ) +
+  # Set 3 breaks
+  ggplot2::scale_y_continuous(
+    # Add padding on top
+    # expand = ggplot2::expansion(mult = c(0, 0.1)),
+    breaks = equal_breaks(n = 3, s = 0.05),
+    expand = c(0.05, 0),
+    labels = function(x) sapply(x, FUN = function(i) format(x = i, nsmall = 0))) +
+  ggplot2::theme(
+    strip.text = ggplot2::element_text(size = 30, face = "bold"),
+    axis.text.y = ggplot2::element_text(size = 20),
+    axis.text.x = ggplot2::element_text(size = 20),
+    axis.title = ggplot2::element_text(size = 25),
+    panel.grid.major = ggplot2::element_blank(),
+    panel.grid.minor = ggplot2::element_blank(),
+    strip.background = ggplot2::element_blank(),
+    panel.border = ggplot2::element_rect(colour = "black"),
+    legend.text = ggplot2::element_text(size = 22),
+    legend.title = ggplot2::element_blank()) +
+  ggplot2::labs(x = "Stratification",
+       y = "Proportion",
+       color = "Regions",
+       fill = "Regions")
+
+  # guides(color = guide_legend(override.aes = list(size = 3)))
+  
+(bplt_pval <- bplt_tmp2 +
+  ggpubr::stat_compare_means(method = "anova", size = 8) +
+  ggplot2::scale_y_continuous(
+    expand = expansion(mult = c(0, 0.1)),
+    labels = function(x) sprintf("%.2f", x)) +
+  ggplot2::theme(
+    axis.text = ggplot2::element_text(size = 15),
+    strip.text = ggplot2::element_text(size = 30),
+    axis.title = ggplot2::element_text(size = 25)
+  ))
+
+"{an_oro}/{plt_dir}/strat_bplot_oro_{sample_id}_{clust_vr}_interest.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = bplt_tmp2,
+    base_height = 15,
+    base_width = 15)
+
+```
+
+#### Heatmap
+Proportion heatmap, Here we look at the proportion of spots within each stratified regions contains a cell type regardless of its proportion.
+```{r}
+tmp_df <- se_obj@meta.data %>%
+  # dplyr::select(-c("res_ss")) %>%
+  dplyr::mutate(total = 1) %>%
+  dplyr::select(all_of(c(ct, "total", "Stratification"))) %>%
+  tidyr::pivot_longer(cols = all_of(ct)) %>%
+  dplyr::mutate(value = if_else(value < 0.001, 0, 1)) %>%
+  dplyr::group_by(name, Stratification) %>%
+  dplyr::summarise(freq = sum(value) / sum(total))
+
+# Plot heatmap
+hm_tmp <- tmp_df %>%
+  ggplot(aes(x = Stratification, 
+             y = name, 
+             fill= freq)) + 
+  geom_tile(color = "lightgrey") +
+  geom_text(aes(label = round(freq, 2)), 
+            show.legend = FALSE) +
+  labs(title = "Oropharyngeal cancer cell-type enrichment by region",
+       y = "Cell types", 
+       x = "",
+       fill = "Proportion") +
+  theme_classic() +
+  scale_y_discrete(limits = rev(ct),
+                   labels = stringr::str_wrap(string = rev(ct),
+                                              width = 21)) +
+  scale_fill_gradient(low = "#FFF5F0",
+                      high = "#99000D",
+                      guide = "legend",
+                      limits = c(0, 1),
+                      breaks = seq(0, 1, 0.1)) +
+  scale_alpha_continuous(guide = "legend",
+                         limits = c(0, 1), 
+                         breaks = seq(0, 1, 0.1)) +
+  theme(axis.text.x = element_text(size = 12, angle = 90, vjust = 0.5),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 17),
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+        axis.title = element_text(size = 15),
+        axis.line = element_blank())
+
+"{an_oro}/{plt_dir}/strat_heatmap_oro_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = hm_tmp,
+    base_height = 15,
+    base_width = 9)
+
+# Plot heatmap without text
+hm_tmp2 <- tmp_df %>%
+  ggplot(aes(x = Stratification, 
+             y = name, 
+             fill= freq)) + 
+  geom_tile(color = "lightgrey") +
+  labs(title = "Oropharyngeal cancer cell-type enrichment by region",
+       y = "Cell types", 
+       x = "",
+       fill = "Proportion") +
+  theme_classic() +
+  scale_y_discrete(limits = rev(ct)) +
+  scale_fill_gradient(low = "#FFF5F0",
+                      high = "#99000D",
+                      guide = "legend",
+                      limits = c(0, 1),
+                      breaks = seq(0, 1, 0.1)) +
+  scale_alpha_continuous(guide = "legend",
+                         limits = c(0, 1), 
+                         breaks = seq(0, 1, 0.1)) +
+  theme(axis.text.x = element_text(size = 12, angle = 90, vjust = 0.5),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 17),
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+        axis.title = element_text(size = 15),
+        axis.line = element_blank())
+
+"{an_oro}/{plt_dir}/strat_heatmap_oro_{sample_id}_{clust_vr}_labelless.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = hm_tmp2,
+    base_height = 15,
+    base_width = 9)
+```
+
+## Cell-Cell correlation plot
+By looking at correlations we want to assess if there are cell types which are correlating in space. So when one is present is another one also present?
+
+We will be using `ggcorrplot` to show these correlation plots a bit nicer:
+http://www.sthda.com/english/wiki/ggcorrplot-visualization-of-a-correlation-matrix-using-ggplot2
+<!-- http://www.sthda.com/english/wiki/visualize-correlation-matrix-using-correlogram -->
+
+Get correlation matrix between all cell types
+```{r}
+decon_df <- se_obj@meta.data %>%
+  dplyr::select(all_of(ct))
+
+# Remove cell types not predicted to be on the tissue
+decon_df <- decon_df[, colSums(decon_df) > 0]
+decon_cor <- cor(decon_df)
+
+# Compute correlation P-value
+p.mat <- corrplot::cor.mtest(mat = decon_df, conf.level = 0.95)
+colnames(decon_cor) <- stringr::str_wrap(
+  string = colnames(decon_cor),
+  width = 30)
+rownames(decon_cor) <- stringr::str_wrap(
+  string = rownames(decon_cor),
+  width = 30)
+
+
+cor_plt <- ggcorrplot::ggcorrplot(corr = decon_cor,
+           p.mat = p.mat[[1]],
+           hc.order = TRUE,
+           type = "full",
+           insig = "blank",
+           lab = TRUE,
+           outline.col = "lightgrey",
+           method = "square",
+           # colors = c("#4477AA", "white", "#BB4444"))
+           colors = c("#6D9EC1", "white", "#E46726"),
+           title = "Oropharyngeal carcinoma cell-cell proportion correlation",
+           legend.title = "Correlation\n(Pearson)") +
+   theme(
+    plot.title = element_text(size = 22, hjust = 0.5, face = "bold"),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 15),
+    axis.text.x = element_text(angle = 90),
+    axis.text = element_text(size = 18, vjust = 0.5))
+cor_plt
+# cowplot::save_plot(plot = cor_plt,
+#                  filename = sprintf("%s/%s/correlation_plot_breast_%s.pdf",
+#                      an_oro, plt_dir, i),
+#                  base_width = 16,
+#                  base_height = 12)
+
+"{an_oro}/{plt_dir}/correlation_plot_{sample_id}_{clust_vr}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = cor_plt,
+    base_height = 16,
+    base_width = 12)
+
+# Now without labels
+cor_plt2 <- ggcorrplot::ggcorrplot(corr = decon_cor,
+           p.mat = p.mat[[1]],
+           hc.order = TRUE,
+           type = "full",
+           insig = "blank",
+           lab = FALSE,
+           outline.col = "lightgrey",
+           method = "square",
+           # colors = c("#4477AA", "white", "#BB4444"))
+           colors = c("#6D9EC1", "white", "#E46726"),
+           title = glue::glue("Oropharyngeal carcinoma cell-cell proportion correlation \n Sample-{sample_id}"),
+           legend.title = "Correlation\n(Pearson)") +
+  theme(
+    plot.title = element_text(size = 25, hjust = 0.5, face = "bold"),
+    legend.text = element_text(size = 18),
+    legend.title = element_text(size = 22),
+    axis.text.x = element_text(angle = 90, size = 18, vjust = 0.5),
+    axis.text.y = element_text(vjust = 0.5, size = 18))
+
+cor_plt2
+
+"{an_oro}/{plt_dir}/correlation_plot_{sample_id}_{clust_vr}_labelless.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = cor_plt2,
+    base_height = 16,
+    base_width = 12)
+```
+
+Lastly we are going to plot pairs of interest for the main figure
+```{r eval = FALSE}
+if (clust_vr == "lv2_annot") {
+  pairs_int <- c("Proliferation-CD8.IFN.activated",
+                 "Proliferation-CD4.activated",
+                 "CD8.exhausted-T.helper.Th17",
+                 "CD4.activated-TAMs.C1QC",
+                 "NK-TAMs.C1QC",
+                 "CD8.exhausted-TAMs.C1QC")
+} else if (clust_vr == "lv1_annot") {
+  if (sample_id == "161429") {
+    pairs_int <- c("B cells/Proliferation",
+                   "B cells/cDC",
+                   "T cells regulatory/CD8 cytotoxic",
+                   "T cells regulatory/CD8 terminally exhausted",
+                   "TAMs C1QC/Macrophages SPP1",
+                   "Proliferation/Macrophages SPP1"
+                   )
+  } else if (sample_id == "161430") {
+    pairs_int <- c("TAMs C1QC/Proliferation",
+                   "TAMs C1QC/CD8 terminally exhausted",
+                   "TAMs C1QC/Macrophages SPP1",
+                   "Proliferation/Macrophages SPP1",
+                   "T cells regulatory/CD8 terminally exhausted",
+                   "Proliferation/CD4 recently activated",
+                   "Proliferation/CD8 terminally exhausted"
+                   )
+  }
+}
+```
+
+Iterate over the pairs
+```{r eval = FALSE}
+# Remove cell types not predicted to be on the tissue
+decon_df <- decon_df[, colSums(decon_df) > 0]
+
+scater_interest <- lapply(pairs_int, function(i) {
+  print(i)
+  # separate ct_12
+  str_ls <- stringr::str_split(string = i, pattern = "/",simplify = TRUE)
+  ct1 <-str_ls[[1]]
+  ct2 <-str_ls[[2]]
+  
+  ggplot(decon_df,
+         aes(x = decon_df[, ct1], y = decon_df[, ct2])) +
+    geom_point() +
+    ggpubr::stat_cor(method = "pearson",
+                     label.y = max(decon_df[, ct2]) + 0.05,
+                     size = 5) +
+    labs(x = stringr::str_wrap(glue::glue("{ct1} proportion"), width = 30),
+         y = stringr::str_wrap(glue::glue("{ct2} proportion"), width = 30)) +
+    theme_classic() +
+    theme(
+      axis.text = element_text(size = 16),
+      axis.title = element_text(size = 20))
+  }) %>%
+  cowplot::plot_grid(plotlist = ., nrow = 3,ncol = 2)
+
+scater_interest
+
+"{an_oro}/{plt_dir}/scater_cor_plot_{sample_id}_{clust_vr}_interest.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = scater_interest,
+    base_height = 16,
+    base_width = 12)
+```
+
+#### Markers
+TGFB1 is a known fibrotic marker.
+```{r}
+sp_cl <- Seurat::SpatialDimPlot(object = se_obj,
+                                group.by = "SCT_snn_res.0.1")
+
+sp_tmp <- Seurat::SpatialFeaturePlot(object = se_obj,
+                           features = "TGFB1",
+                           alpha = c(0, 1))
+
+vln_tmp <- Seurat::VlnPlot(object = se_obj,
+                           features = "TGFB1",
+                           group.by = "SCT_snn_res.0.1",
+                           assay = "SCT",
+                           slot = "data")
+
+tmp <- sp_cl + sp_tmp + vln_tmp
+tmp
+
+"{an_oro}/{plt_dir}/fibrotic_marker_{sample_id}.pdf" %>%
+  glue::glue() %>%
+  here::here() %>%
+  cowplot::save_plot(
+    filename = .,
+    plot = tmp,
+    base_height = 6,
+    base_width = 15)
+```
+
+```{r}
+chart.Correlation(decon_df, histogram=TRUE, pch=19)
+```
+
+## Session Info
+```{r}
+sessionInfo()
+```
+
