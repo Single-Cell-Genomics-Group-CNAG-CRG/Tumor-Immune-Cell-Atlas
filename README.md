@@ -1,7 +1,7 @@
 # Single-Cell Tumor Immune Atlas project
 Code repository for the Single-Cell Tumor Immune Atlas project.
 
-Find our preprint here:[https://doi.org/10.1101/2020.10.26.354829](https://doi.org/10.1101/2020.10.26.354829).
+Our paper is out now on [Genome Research](https://singlecellgenomics-cnag-crg.shinyapps.io/TICA/).
 
 ![](misc/atlas.png)
 
@@ -11,6 +11,8 @@ We present a single cell immune atlas of the tumor microenvironment composed by 
 * Patient stratification 
 * Annotation 
 * Spatial mapping
+
+You can inspect our dataset and query your own easily, by using our ShinyApp [here](https://singlecellgenomics-cnag-crg.shinyapps.io/TICA/).
 
 
 ## Abstract
